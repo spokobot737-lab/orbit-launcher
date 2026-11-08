@@ -21,6 +21,7 @@ mod programs;
 mod publisher;
 mod roblox;
 mod secure;
+mod servers;
 mod social;
 mod social_commands;
 mod social_network;
@@ -46,6 +47,7 @@ pub struct AppState {
     pub auth_lock: tokio::sync::Mutex<()>,
     pub social: social::Runtime,
     pub transfers: media::Transfers,
+    pub servers: servers::Runtime,
 }
 pub type Shared = Arc<AppState>;
 pub fn progress(app: &tauri::AppHandle, stage: &str, done: usize, total: usize) {
@@ -58,7 +60,13 @@ pub fn post_launch(app: &tauri::AppHandle, s: &AppState) {
             let _ = w.minimize();
         }
     } else if setting == "exit" {
-        app.exit(0);
+        if servers::active(s) {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.minimize();
+            }
+        } else {
+            app.exit(0);
+        }
     }
 }
 
@@ -117,6 +125,7 @@ async fn api(
             "mc_account" => auth::account(&s),
             "mc_signout" => auth::signout(&s),
             "logs" => minecraft::logs(&s, &args),
+            _ if op.starts_with("server_") => servers::dispatch(Some(app.clone()), s.clone(), &op, args.clone()).await,
             _ if op.starts_with("orbit_") => {
                 social_commands::dispatch(&app, s.clone(), &op, args.clone()).await
             }
@@ -156,6 +165,7 @@ fn main() {
                 auth_lock: tokio::sync::Mutex::new(()),
                 social: social::Runtime::default(),
                 transfers: media::Transfers::new(),
+                servers: crate::servers::Runtime::default(),
             });
             identity::init(&state)?;
             app.manage(state.clone());
@@ -168,6 +178,17 @@ fn main() {
                 }
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let state = window.state::<Shared>();
+                if servers::active(&state) {
+                    api.prevent_close();
+                    let _ = window.emit("hosting-close", json!({}));
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![api])
         .run(tauri::generate_context!())

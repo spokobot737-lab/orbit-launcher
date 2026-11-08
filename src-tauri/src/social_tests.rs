@@ -196,6 +196,7 @@ pub(crate) fn state(root: PathBuf) -> Result<Shared> {
         auth_lock: tokio::sync::Mutex::new(()),
         social: social::Runtime::default(),
         transfers: media::Transfers::new(),
+        servers: crate::servers::Runtime::default(),
     });
     identity::init(&s)?;
     Ok(s)

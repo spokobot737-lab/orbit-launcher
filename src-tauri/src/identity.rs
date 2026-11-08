@@ -194,7 +194,7 @@ pub fn messages(s: &AppState, v: &Value) -> Result<Value> {
     let before_id = v["beforeId"].as_str().unwrap_or("");
     let raw = {
         let c = s.db.lock().unwrap();
-        let mut q=c.prepare("SELECT id,direction,kind,body,state,created,error FROM messages WHERE peer=? AND kind IN('message','wallet_challenge','wallet_proof') AND (created<? OR (created=? AND id<?)) ORDER BY created DESC,id DESC LIMIT 60")?;
+        let mut q=c.prepare("SELECT id,direction,kind,body,state,created,error FROM messages WHERE peer=? AND kind IN('message','wallet_challenge','wallet_proof','server_invite') AND (created<? OR (created=? AND id<?)) ORDER BY created DESC,id DESC LIMIT 60")?;
         let rows = q
             .query_map(params![peer, before, before, before_id], |r| {
                 Ok((

@@ -585,6 +585,18 @@ pub async fn receive(s: &AppState, client: &Client, event: &Event) -> Result<()>
             validate_public_profile(&body["profile"], gift.sender)?;
             crate::profile_sync::cache(s, &body["profile"], "accepted")?;
         }
+        "server_session" | "server_invite" => {
+            ensure!(
+                contact["state"] == "accepted",
+                "Only accepted friends may share servers"
+            );
+            crate::servers::sessions::receive(s, &sender, body)?;
+            if kind == "server_invite" {
+                let encrypted = secure::seal(s, &body.to_string())?;
+                s.db.lock().unwrap().execute("INSERT OR IGNORE INTO messages(id,peer,direction,kind,body,state,created) VALUES(?,?,'in',?,?,'delivered',?)",params![id,sender,kind,encrypted,created])?;
+                queue(s, &sender, "ack", json!({"id":id}), true).await?;
+            }
+        }
         "profile_update" => {
             ensure!(
                 contact["state"] == "accepted",

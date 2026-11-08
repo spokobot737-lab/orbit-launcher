@@ -192,33 +192,8 @@ pub async fn install_core(
         meta["arguments"]["game"].is_array(),
         "This release supports modern Java Edition versions only (1.20.5+)"
     );
-    let java = meta["javaVersion"].clone();
-    let component = text(&java, "component")?;
-    let runtime_index = net::cached(s, "mc:runtimes", RUNTIMES, 86400).await?;
-    let runtime = &runtime_index["windows-x64"][component][0];
-    ensure!(
-        runtime.is_object(),
-        "No Windows x64 Java runtime is available for this version"
-    );
-    let runtime_root = shared.join("runtimes").join(component);
-    let runtime_meta = runtime_root.join("manifest.json");
-    let d = task(&runtime["manifest"], runtime_meta.clone())?;
-    s.net.download(&d.url, &d.path, &d.sha1).await?;
-    let rm: Value = serde_json::from_slice(&tokio::fs::read(runtime_meta).await?)?;
-    let mut runtime_jobs = vec![];
-    for (name, f) in rm["files"]
-        .as_object()
-        .context("Runtime manifest missing files")?
-    {
-        let dest = net::safe_join(&runtime_root, name)?;
-        match f["type"].as_str() {
-            Some("file") => runtime_jobs.push(task(&f["downloads"]["raw"], dest)?),
-            Some("directory") => tokio::fs::create_dir_all(dest).await?,
-            Some("link") => bail!("Runtime contains an unsupported symbolic link"),
-            _ => bail!("Unknown runtime file type"),
-        }
-    }
-    batch(s, app, "Installing Java runtime", runtime_jobs).await?;
+    let runtime_root = ensure_runtime(s, &meta, app).await?;
+    let component = text(&meta["javaVersion"], "component")?.to_owned();
     let mut jobs = vec![task(
         &meta["downloads"]["client"],
         shared
@@ -394,6 +369,41 @@ pub async fn install_core(
     report(app, "Installation complete", 1, 1);
     Ok(json!({"installed":true,"id":p["id"]}))
 }
+pub async fn ensure_runtime(
+    s: &AppState,
+    meta: &Value,
+    app: Option<&tauri::AppHandle>,
+) -> Result<PathBuf> {
+    let shared = s.root.join("minecraft/shared");
+    let java = meta["javaVersion"].clone();
+    let component = text(&java, "component")?;
+    let runtime_index = net::cached(s, "mc:runtimes", RUNTIMES, 86400).await?;
+    let runtime = &runtime_index["windows-x64"][component][0];
+    ensure!(
+        runtime.is_object(),
+        "No Windows x64 Java runtime is available for this version"
+    );
+    let runtime_root = shared.join("runtimes").join(component);
+    let runtime_meta = runtime_root.join("manifest.json");
+    let d = task(&runtime["manifest"], runtime_meta.clone())?;
+    s.net.download(&d.url, &d.path, &d.sha1).await?;
+    let rm: Value = serde_json::from_slice(&tokio::fs::read(runtime_meta).await?)?;
+    let mut runtime_jobs = vec![];
+    for (name, f) in rm["files"]
+        .as_object()
+        .context("Runtime manifest missing files")?
+    {
+        let dest = net::safe_join(&runtime_root, name)?;
+        match f["type"].as_str() {
+            Some("file") => runtime_jobs.push(task(&f["downloads"]["raw"], dest)?),
+            Some("directory") => tokio::fs::create_dir_all(dest).await?,
+            Some("link") => bail!("Runtime contains an unsupported symbolic link"),
+            _ => bail!("Unknown runtime file type"),
+        }
+    }
+    batch(s, app, "Installing Java runtime", runtime_jobs).await?;
+    Ok(runtime_root)
+}
 fn expand(s: &str, map: &HashMap<String, String>) -> Result<String> {
     let mut out = s.to_owned();
     for (k, v) in map {
@@ -432,6 +442,7 @@ pub async fn launch(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<V
     let id = text(v, "id")?;
     let p = db::item(s, id)?;
     validate_profile(&p)?;
+    crate::servers::client_memory(s, p["memory"].as_u64().unwrap_or(2048))?;
     let root = profile_root(s, &p)?;
     let installed: Value = serde_json::from_slice(
         &tokio::fs::read(root.join("installed.json"))
@@ -447,7 +458,15 @@ pub async fn launch(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<V
     } else {
         offline_session(text(&p, "offlineName")?)
     };
-    let command = launch_command(&p, &root, &installed, &session)?;
+    let mut command = launch_command(&p, &root, &installed, &session)?;
+    if let Some(address) = v["join"].as_str() {
+        ensure!(
+            p["account"] == "microsoft" && p["version"] == crate::servers::VERSION,
+            "Server Quick Play requires an authenticated supported profile"
+        );
+        crate::servers::sessions::address(address)?;
+        command.arg("--quickPlayMultiplayer").arg(address);
+    }
     let secret = session["accessToken"].as_str().unwrap_or("").to_owned();
     spawn(app, s, &p, command, secret).await
 }

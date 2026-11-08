@@ -1,3 +1,4 @@
+import { ServerInvitationCard } from "./Servers";
 import ProfileCard from "./ProfileCard";
 import NetworkSettings from "./NetworkSettings";
 import ProfileActivity, { SharedActivity } from "./ProfileActivity";
@@ -1610,7 +1611,13 @@ function Conversations({
                       style={{ transform: `translateY(${row.start}px)` }}
                     >
                       <div className="message-bubble">
-                        {m.kind === "wallet_challenge" ? (
+                        {m.kind === "server_invite" ? (
+                          <ServerInvitationCard
+                            body={m.body}
+                            peer={peer}
+                            outgoing={m.direction === "out"}
+                          />
+                        ) : m.kind === "wallet_challenge" ? (
                           <>
                             <strong>
                               <Wallet size={13} /> Wallet verification request
