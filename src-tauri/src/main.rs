@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod activity;
 mod auth;
+#[cfg(test)]
+mod automatic_live_tests;
 mod backup;
 mod bluesky;
 mod connections;
@@ -12,16 +14,22 @@ mod media;
 mod minecraft;
 mod mods;
 mod net;
+#[cfg(test)]
+mod operator_tests;
+mod profile_sync;
 mod programs;
 mod publisher;
 mod roblox;
 mod secure;
 mod social;
 mod social_commands;
+mod social_network;
 #[cfg(test)]
 mod social_peer_tests;
 #[cfg(test)]
 mod social_tests;
+#[cfg(test)]
+mod social_upgrade_tests;
 mod wallet;
 use serde_json::{json, Value};
 use std::{

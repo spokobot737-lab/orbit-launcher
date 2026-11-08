@@ -30,6 +30,7 @@ pub fn save(s: &AppState, provider: &str, value: &Value) -> Result<Value> {
         "INSERT OR REPLACE INTO connections VALUES(?,?)",
         params![provider, value.to_string()],
     )?;
+    crate::profile_sync::mark_dirty(s)?;
     Ok(value.clone())
 }
 pub fn open_profile(s: &AppState, v: &Value) -> Result<Value> {
@@ -131,6 +132,7 @@ pub async fn disconnect(s: &AppState, v: &Value) -> Result<Value> {
     s.db.lock()
         .unwrap()
         .execute("DELETE FROM connections WHERE provider=?", [p])?;
+    crate::profile_sync::mark_dirty(s)?;
     Ok(
         json!({"disconnected":true,"note":"Saved credentials removed from this device. Use the provider's authorized-app settings to revoke the external grant as well."}),
     )

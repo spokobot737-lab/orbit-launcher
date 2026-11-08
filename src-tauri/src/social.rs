@@ -11,13 +11,20 @@ pub struct Runtime {
     pub client: tokio::sync::Mutex<Option<Client>>,
     pub generation: std::sync::atomic::AtomicU64,
     pub send_lock: tokio::sync::Mutex<()>,
+    pub start_lock: tokio::sync::Mutex<()>,
+    pub recovery_lock: tokio::sync::Mutex<()>,
+    pub profile_lock: tokio::sync::Mutex<()>,
+    pub ever_connected: AtomicBool,
+    pub last_relay_ack: std::sync::atomic::AtomicI64,
+    pub connect_started: std::sync::atomic::AtomicI64,
+    pub connection_phase: std::sync::Mutex<String>,
     pub wallet_lock: tokio::sync::Mutex<()>,
     pub gaming: AtomicBool,
     pub game: std::sync::Mutex<Value>,
     pub music: std::sync::Mutex<Value>,
     pub watcher: std::sync::Mutex<Option<crate::activity::Watcher>>,
 }
-fn notify(app: Option<&tauri::AppHandle>) {
+pub(crate) fn notify(app: Option<&tauri::AppHandle>) {
     if let Some(a) = app {
         let _ = a.emit("social-changed", json!({}));
     }
@@ -29,6 +36,9 @@ fn public_profile(s: &AppState) -> Result<Value> {
     )
 }
 fn friend_profile(s: &AppState) -> Result<Value> {
+    if let Some(profile) = crate::profile_sync::shared(s)? {
+        return Ok(profile);
+    }
     let mut p = public_profile(s)?;
     let own = identity::profile(s)?;
     if let Some(encoded) = own["avatar"]
@@ -56,24 +66,6 @@ fn friend_profile(s: &AppState) -> Result<Value> {
         }
     }
     Ok(p)
-}
-pub async fn share_profile(s: &AppState) -> Result<Value> {
-    let profile = friend_profile(s)?;
-    let mut count = 0;
-    for contact in identity::contacts(s)?.as_array().unwrap() {
-        if contact["state"] == "accepted" {
-            queue(
-                s,
-                contact["id"].as_str().context("Invalid contact")?,
-                "profile_update",
-                json!({"profile":profile}),
-                true,
-            )
-            .await?;
-            count += 1;
-        }
-    }
-    Ok(json!({"queued":count}))
 }
 fn relays(v: &Value) -> Result<Vec<String>> {
     let a = v.as_array().context("Inbox relays missing")?;
@@ -170,7 +162,7 @@ pub async fn import_invitation(s: &AppState, v: &Value) -> Result<Value> {
         ensure!(old["state"] != "blocked", "This person is blocked");
         ensure!(old["state"] != "accepted", "You are already friends");
     }
-    identity::put_contact(s, &p, "outgoing")?;
+    crate::profile_sync::cache(s, &p, "outgoing")?;
     queue(
         s,
         &event.pubkey.to_hex(),
@@ -182,6 +174,7 @@ pub async fn import_invitation(s: &AppState, v: &Value) -> Result<Value> {
     Ok(p)
 }
 fn validate_public_profile(p: &Value, key: PublicKey) -> Result<()> {
+    crate::profile_sync::validate(p, key)?;
     ensure!(
         p["wallet"].is_null(),
         "A shared profile cannot assert a verified wallet; a peer-issued proof is required"
@@ -211,6 +204,7 @@ pub async fn accept(s: &AppState, v: &Value) -> Result<Value> {
     let contact = identity::contact(s, id)?;
     ensure!(contact["state"] == "incoming", "No pending invitation");
     identity::put_contact(s, &contact, "accepted")?;
+    crate::profile_sync::mark_dirty(s)?;
     queue(
         s,
         id,
@@ -311,6 +305,8 @@ pub async fn send(s: &AppState, v: &Value) -> Result<Value> {
 }
 pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
     stop(&s).await;
+    s.social.last_relay_ack.store(0, Ordering::Relaxed);
+    s.social.connect_started.store(db::now(), Ordering::Relaxed);
     let cfg = identity::config(&s)?;
     ensure!(
         cfg["enabled"] == true,
@@ -319,9 +315,11 @@ pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
     let urls = relays(&cfg["relays"])?;
     let keys = identity::keys(&s)?;
     let client = Client::new(keys.clone());
+    client.automatic_authentication(true);
     for r in &urls {
         client.add_relay(r).await?;
     }
+    *s.social.client.lock().await = Some(client.clone());
     let mut notifications = client.notifications();
     client.connect().await;
     client
@@ -341,9 +339,32 @@ pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
                 .collect::<Result<Vec<_>, _>>()?,
         )
         .sign_with_keys(&keys)?;
-    let _ = client.send_event_to(&urls, &inbox).await;
+    if let Ok(Ok(output)) = tokio::time::timeout(
+        std::time::Duration::from_secs(12),
+        client.send_event_to(&urls, &inbox),
+    )
+    .await
+    {
+        if !output.success.is_empty() {
+            s.social.last_relay_ack.store(db::now(), Ordering::Relaxed);
+        }
+    }
     *s.social.client.lock().await = Some(client.clone());
     let generation = s.social.generation.load(Ordering::SeqCst);
+    let jobs_exist: bool =
+        s.db.lock()
+            .unwrap()
+            .query_row("SELECT EXISTS(SELECT 1 FROM profile_jobs)", [], |r| {
+                r.get(0)
+            })?;
+    if !jobs_exist {
+        crate::profile_sync::mark_dirty(&s)?;
+    }
+    let recovery = s.clone();
+    let recover_client = client.clone();
+    tokio::spawn(async move {
+        let _ = recover(recovery, recover_client).await;
+    });
     let state = s.clone();
     let handle = app.clone();
     let incoming = client.clone();
@@ -360,6 +381,7 @@ pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
                         eprintln!("Synthetic envelope rejected: {e:#}");
                     }
                     notify(handle.as_ref());
+                    crate::profile_sync::schedule(handle.clone(), state.clone());
                 }
             }
         }
@@ -371,6 +393,27 @@ pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
             tick.tick().await;
             if state.social.generation.load(Ordering::SeqCst) != generation {
                 break;
+            }
+            crate::profile_sync::schedule(app.clone(), state.clone());
+            if let Ok(snapshot) = status(&state).await {
+                let phase = snapshot["phase"].as_str().unwrap_or("Offline").to_owned();
+                let changed = {
+                    let mut previous = state.social.connection_phase.lock().unwrap();
+                    let changed = *previous != phase;
+                    *previous = phase.clone();
+                    changed
+                };
+                if changed {
+                    notify(app.as_ref());
+                    if phase == "Connected" {
+                        if let Some(client) = state.social.client.lock().await.clone() {
+                            let recovery = state.clone();
+                            tokio::spawn(async move {
+                                let _ = recover(recovery, client).await;
+                            });
+                        }
+                    }
+                }
             }
             let pending: bool = state
                 .db
@@ -439,6 +482,7 @@ pub async fn flush(s: &AppState) -> Result<()> {
         let message_id = id.rsplit_once(':').context("Invalid outbox ID")?.0;
         let c = s.db.lock().unwrap();
         if ok {
+            s.social.last_relay_ack.store(db::now(), Ordering::Relaxed);
             c.execute("DELETE FROM outbox WHERE id=?", [&id])?;
             if id.ends_with(":peer") {
                 c.execute("UPDATE messages SET state='sent',error=NULL WHERE id=? AND state IN('queued','failed')",[message_id])?;
@@ -498,7 +542,8 @@ pub async fn receive(s: &AppState, client: &Client, event: &Event) -> Result<()>
     let kind = e["kind"].as_str().context("Message kind missing")?;
     let created = e["created"].as_i64().context("Message time missing")?;
     ensure!(
-        created <= db::now() + 300 && created > db::now() - 90 * 86400,
+        created <= db::now() + 300
+            && (kind == "profile_update" || created > db::now() - 90 * 86400),
         "Message time is outside the supported window"
     );
     let seen: bool = s.db.lock().unwrap().query_row(
@@ -529,7 +574,7 @@ pub async fn receive(s: &AppState, client: &Client, event: &Event) -> Result<()>
             )?;
             ensure!(count < 30, "Too many pending invitations");
             if contact["state"] != "accepted" {
-                identity::put_contact(s, &body["profile"], "incoming")?;
+                crate::profile_sync::cache(s, &body["profile"], "incoming")?;
             }
         }
         "friend_accept" => {
@@ -538,7 +583,7 @@ pub async fn receive(s: &AppState, client: &Client, event: &Event) -> Result<()>
                 "No outgoing friendship request"
             );
             validate_public_profile(&body["profile"], gift.sender)?;
-            identity::put_contact(s, &body["profile"], "accepted")?;
+            crate::profile_sync::cache(s, &body["profile"], "accepted")?;
         }
         "profile_update" => {
             ensure!(
@@ -546,11 +591,7 @@ pub async fn receive(s: &AppState, client: &Client, event: &Event) -> Result<()>
                 "Only accepted friends can update their profile"
             );
             validate_public_profile(&body["profile"], gift.sender)?;
-            let mut profile = body["profile"].clone();
-            if !contact["wallet"].is_null() {
-                profile["wallet"] = contact["wallet"].clone();
-            }
-            identity::put_contact(s, &profile, "accepted")?;
+            crate::profile_sync::cache(s, &body["profile"], "accepted")?;
         }
         "ack" => {
             ensure!(
@@ -665,11 +706,98 @@ pub async fn wallet_approve(s: &AppState, v: &Value) -> Result<Value> {
     .await?;
     Ok(json!(true))
 }
+pub fn wake(app: Option<tauri::AppHandle>, s: Shared) {
+    tokio::spawn(async move {
+        let _lock = s.social.start_lock.lock().await;
+        if identity::config(&s).is_ok_and(|c| c["enabled"] == true)
+            && identity::profile(&s).is_ok_and(|p| !p.is_null())
+            && s.social.client.lock().await.is_none()
+        {
+            let _ = start(app.clone(), s.clone()).await;
+            notify(app.as_ref());
+        }
+        crate::profile_sync::schedule(app, s.clone());
+    });
+}
+async fn recover(s: Shared, client: Client) -> Result<()> {
+    let Ok(_guard) = s.social.recovery_lock.try_lock() else {
+        return Ok(());
+    };
+    let key = identity::keys(&s)?.public_key();
+    let cfg = identity::config(&s)?;
+    for url in relays(&cfg["relays"])? {
+        let mut until = None;
+        let mut previous = None;
+        let mut limit = 256;
+        for _ in 0..32 {
+            let mut filter = Filter::new().kind(Kind::GiftWrap).pubkey(key).limit(limit);
+            if let Some(time) = until {
+                filter = filter.until(Timestamp::from(time));
+            }
+            let events = match client
+                .fetch_events_from([url.as_str()], filter, std::time::Duration::from_secs(10))
+                .await
+            {
+                Ok(events) => events,
+                Err(_) => break,
+            };
+            let count = events.len();
+            let mut oldest = u64::MAX;
+            for event in events.iter() {
+                oldest = oldest.min(event.created_at.as_secs());
+                let _ = receive(&s, &client, event).await;
+            }
+            if count < limit || count == 0 {
+                break;
+            }
+            if previous == Some(oldest) {
+                if limit >= 2048 {
+                    break;
+                }
+                limit *= 2;
+            } else {
+                previous = Some(oldest);
+                until = Some(oldest);
+            }
+        }
+    }
+    Ok(())
+}
 pub async fn status(s: &AppState) -> Result<Value> {
+    let enabled = identity::config(s)?["enabled"] == true;
+    let client = s.social.client.lock().await.clone();
+    let mut diagnostics = vec![];
+    let mut connected = 0;
+    if let Some(ref client) = client {
+        for (url, relay) in client.relays().await {
+            let state = relay.status();
+            if state == RelayStatus::Connected {
+                connected += 1;
+            }
+            diagnostics.push(json!({"url":url.to_string(),"state":state.to_string()}));
+        }
+    }
+    let acknowledged = s.social.last_relay_ack.load(Ordering::Relaxed) > 0;
+    if connected > 0 && acknowledged {
+        s.social.ever_connected.store(true, Ordering::Relaxed);
+    }
+    let phase = if !enabled {
+        "Offline"
+    } else if connected > 0 && acknowledged {
+        "Connected"
+    } else if s.social.ever_connected.load(Ordering::Relaxed) {
+        "Reconnecting"
+    } else if client.is_none() || db::now() - s.social.connect_started.load(Ordering::Relaxed) > 30
+    {
+        "Offline"
+    } else {
+        "Connecting"
+    };
     Ok(
-        json!({"enabled":identity::config(s)?["enabled"],"running":s.social.client.lock().await.is_some(),"gaming":s.social.gaming.load(Ordering::Relaxed)}),
+        json!({"enabled":enabled,"running":client.is_some(),"phase":phase,"lastAcknowledgment":s.social.last_relay_ack.load(Ordering::Relaxed),"gaming":s.social.gaming.load(Ordering::Relaxed),"diagnostics":diagnostics,"operators":crate::social_network::operators()}),
     )
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

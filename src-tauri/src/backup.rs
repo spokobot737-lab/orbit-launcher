@@ -16,6 +16,14 @@ const TABLES: &[(&str, &str)] = &[
     ("media", "id,data"),
     ("outbox", "id,event,relays,attempts,next_try"),
     ("connections", "provider,data"),
+    (
+        "profile_jobs",
+        "singleton,revision,status,error,attempts,next_try,snapshot",
+    ),
+    ("profile_assets", "kind,source_hash,media_id"),
+    ("profile_snapshots", "peer,revision,event"),
+    ("profile_deliveries", "peer,revision,message_id"),
+    ("profile_downloads", "peer,next_try,attempts"),
 ];
 pub fn snapshot(s: &AppState) -> Result<Value> {
     let profile = identity::profile(s)?;
@@ -138,6 +146,9 @@ pub fn restore_snapshot(s: &AppState, b: &Value) -> Result<Value> {
         [config.to_string()],
     )?;
     for (table, cols) in TABLES {
+        if table.starts_with("profile_") && b[*table].is_null() {
+            continue;
+        }
         let rows = b[*table].as_array().context("Backup table missing")?;
         ensure!(rows.len() <= 100_000, "Backup table is too large");
         let width = cols.split(',').count();

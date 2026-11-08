@@ -55,9 +55,7 @@ type Page =
   | "Settings"
   | "Profile"
   | "Connections"
-  | "Friends"
-  | "Conversations"
-  | "Activity";
+  | "Conversations";
 type Progress = {
   stage: string;
   done: number;
@@ -70,13 +68,11 @@ const nav = [
   { name: "Minecraft", icon: Boxes },
   { name: "Roblox", icon: Grid2X2 },
   { name: "Programs", icon: Monitor },
+  { name: "Profile", icon: UserRound },
+  { name: "Conversations", icon: MessageSquare },
   { name: "Collections", icon: Folder },
   { name: "Downloads", icon: Download },
   { name: "Settings", icon: Settings },
-  { name: "Profile", icon: UserRound },
-  { name: "Friends", icon: Users },
-  { name: "Conversations", icon: MessageSquare },
-  { name: "Activity", icon: Radio },
 ] as const;
 function App() {
   const [page, setPage] = useState<Page>("Home"),
@@ -433,10 +429,9 @@ function App() {
                 {account ? "Microsoft connected" : "On this computer"}
               </small>
             </span>
-            <Settings size={15} />
           </button>
           <div className="version">
-            ORBIT LAUNCHER <span>v0.2.0</span>
+            ORBIT LAUNCHER <span>v0.3.0</span>
           </div>
         </div>
       </aside>
@@ -473,17 +468,19 @@ function App() {
         </header>
         <main>
           {(
-            [
-              "Profile",
-              "Connections",
-              "Friends",
-              "Conversations",
-              "Activity",
-            ] as string[]
+            ["Profile", "Connections", "Conversations", "Settings"] as string[]
           ).includes(page) && (
             <SocialView
               page={page}
-              onNavigate={(p) => setPage(p as Page)}
+              onNavigate={(p) =>
+                setPage(
+                  p === "Friends"
+                    ? "Conversations"
+                    : p === "Activity"
+                      ? "Profile"
+                      : (p as Page),
+                )
+              }
               onProfileChanged={load}
             />
           )}
@@ -799,7 +796,7 @@ function App() {
             <>
               <Heading
                 eyebrow="MAKE IT YOURS"
-                title="A little fine-tuning."
+                title="Launcher preferences"
                 subtitle="Your preferences stay on this computer."
               />
               <div className="settings-panel">
@@ -850,7 +847,7 @@ function App() {
               <div className="settings-panel about">
                 <span className="brand-symbol">◒</span>
                 <div>
-                  <h2>Orbit 0.2.0 · Social prototype</h2>
+                  <h2>Orbit 0.3.0 · Social prototype</h2>
                   <p>
                     Rust + Tauri + TypeScript + SQLite. No Orbit account. No
                     hosted backend.
@@ -869,7 +866,7 @@ function App() {
           </span>
           <span>
             {items.length} {items.length === 1 ? "item" : "items"} in your space{" "}
-            <Minus size={12} /> Orbit 0.2.0
+            <Minus size={12} /> Orbit 0.3.0
           </span>
         </footer>
       </div>

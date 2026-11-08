@@ -5,6 +5,7 @@ use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 pub fn init(s: &AppState) -> Result<()> {
     s.db.lock().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS orbit_profile(singleton INTEGER PRIMARY KEY CHECK(singleton=1),data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS social_config(singleton INTEGER PRIMARY KEY CHECK(singleton=1),data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS contacts(pubkey TEXT PRIMARY KEY,name TEXT NOT NULL,state TEXT NOT NULL,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY,peer TEXT NOT NULL,direction TEXT NOT NULL,kind TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL,error TEXT); CREATE INDEX IF NOT EXISTS messages_peer_time ON messages(peer,created); CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY,event TEXT NOT NULL,relays TEXT NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,next_try INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS social_seen(id TEXT PRIMARY KEY,seen INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS siwe_challenges(nonce TEXT PRIMARY KEY,peer TEXT NOT NULL,message TEXT NOT NULL,expires INTEGER NOT NULL,used INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS connections(provider TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS media(id TEXT PRIMARY KEY,data TEXT NOT NULL); CREATE TABLE IF NOT EXISTS friend_activity(peer TEXT NOT NULL,kind TEXT NOT NULL,data TEXT NOT NULL,expires INTEGER NOT NULL,PRIMARY KEY(peer,kind));")?;
+    s.db.lock().unwrap().execute_batch("CREATE TABLE IF NOT EXISTS storage_health(service TEXT PRIMARY KEY,until INTEGER NOT NULL,status INTEGER NOT NULL,min_size INTEGER NOT NULL,reason TEXT NOT NULL); CREATE TABLE IF NOT EXISTS profile_jobs(singleton INTEGER PRIMARY KEY CHECK(singleton=1),revision INTEGER NOT NULL,status TEXT NOT NULL,error TEXT,attempts INTEGER NOT NULL DEFAULT 0,next_try INTEGER NOT NULL DEFAULT 0,snapshot TEXT); CREATE TABLE IF NOT EXISTS profile_assets(kind TEXT PRIMARY KEY,source_hash TEXT NOT NULL,media_id TEXT NOT NULL); CREATE TABLE IF NOT EXISTS profile_snapshots(peer TEXT PRIMARY KEY,revision INTEGER NOT NULL,event TEXT NOT NULL); CREATE TABLE IF NOT EXISTS profile_downloads(peer TEXT PRIMARY KEY,next_try INTEGER NOT NULL DEFAULT 0,attempts INTEGER NOT NULL DEFAULT 0); CREATE TABLE IF NOT EXISTS profile_deliveries(peer TEXT PRIMARY KEY,revision INTEGER NOT NULL,message_id TEXT NOT NULL);")?;
     Ok(())
 }
 pub fn profile(s: &AppState) -> Result<Value> {
@@ -39,10 +40,15 @@ pub fn profile_image(v: &Value) -> Result<Value> {
     limits.max_image_width = Some(16000);
     limits.max_image_height = Some(16000);
     reader.limits(limits);
-    let width = if v["banner"] == true { 1600 } else { 512 };
-    let img = reader
-        .decode()?
-        .resize(width, width, ::image::imageops::FilterType::Triangle);
+    let (width, height) = if v["banner"] == true {
+        (1600, 600)
+    } else {
+        (512, 512)
+    };
+    let img =
+        reader
+            .decode()?
+            .resize_to_fill(width, height, ::image::imageops::FilterType::Triangle);
     let mut bytes = vec![];
     ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, 85).encode_image(&img)?;
     ensure!(
@@ -80,7 +86,7 @@ pub fn save(s: &AppState, v: &Value) -> Result<Value> {
         p["npub"] = json!(keys.public_key().to_bech32()?);
         p["created"] = json!(db::now());
     } else {
-        for k in ["id", "npub", "created"] {
+        for k in ["id", "npub", "created", "revision"] {
             p[k] = old[k].clone();
         }
         ensure!(
@@ -92,19 +98,12 @@ pub fn save(s: &AppState, v: &Value) -> Result<Value> {
         "INSERT OR REPLACE INTO orbit_profile VALUES(1,?)",
         [p.to_string()],
     )?;
-    Ok(p)
+    crate::social_network::initialize(s)?;
+    crate::profile_sync::mark_dirty(s)?;
+    profile(s)
 }
 pub fn config(s: &AppState) -> Result<Value> {
-    let raw: Option<String> =
-        s.db.lock()
-            .unwrap()
-            .query_row(
-                "SELECT data FROM social_config WHERE singleton=1",
-                [],
-                |r| r.get(0),
-            )
-            .optional()?;
-    Ok(raw.map(|x|serde_json::from_str(&x)).transpose()?.unwrap_or(json!({"enabled":false,"relays":[],"mediaServer":"","mediaConsent":false,"maxFileBytes":20971520,"pauseWhileGaming":true})))
+    crate::social_network::config(s)
 }
 pub fn validate_endpoint(raw: &str, relay: bool) -> Result<url::Url> {
     let u = url::Url::parse(raw)?;
@@ -131,28 +130,7 @@ pub fn validate_endpoint(raw: &str, relay: bool) -> Result<url::Url> {
     Ok(u)
 }
 pub fn save_config(s: &AppState, v: &Value) -> Result<Value> {
-    let relays = v["relays"]
-        .as_array()
-        .context("Choose up to three inbox relays")?;
-    ensure!(relays.len() <= 3, "Use at most three inbox relays");
-    for r in relays {
-        validate_endpoint(r.as_str().context("Invalid relay")?, true)?;
-    }
-    let server = v["mediaServer"].as_str().unwrap_or("");
-    if !server.is_empty() {
-        validate_endpoint(server, false)?;
-    }
-    let max = v["maxFileBytes"].as_u64().unwrap_or(20 * 1024 * 1024);
-    ensure!(
-        (1..=2 * 1024 * 1024 * 1024).contains(&max),
-        "Local file bound must be at most 2 GiB; actual provider limits still apply"
-    );
-    let value = json!({"enabled":v["enabled"]==true,"relays":relays,"mediaServer":server.trim_end_matches('/'),"mediaConsent":v["mediaConsent"]==true,"maxFileBytes":max,"pauseWhileGaming":v["pauseWhileGaming"].as_bool().unwrap_or(true)});
-    s.db.lock().unwrap().execute(
-        "INSERT OR REPLACE INTO social_config VALUES(1,?)",
-        [value.to_string()],
-    )?;
-    Ok(value)
+    crate::social_network::save(s, v)
 }
 pub fn contacts(s: &AppState) -> Result<Value> {
     let c = s.db.lock().unwrap();
@@ -216,7 +194,7 @@ pub fn messages(s: &AppState, v: &Value) -> Result<Value> {
     let before_id = v["beforeId"].as_str().unwrap_or("");
     let raw = {
         let c = s.db.lock().unwrap();
-        let mut q=c.prepare("SELECT id,direction,kind,body,state,created,error FROM messages WHERE peer=? AND (created<? OR (created=? AND id<?)) ORDER BY created DESC,id DESC LIMIT 60")?;
+        let mut q=c.prepare("SELECT id,direction,kind,body,state,created,error FROM messages WHERE peer=? AND kind IN('message','wallet_challenge','wallet_proof') AND (created<? OR (created=? AND id<?)) ORDER BY created DESC,id DESC LIMIT 60")?;
         let rows = q
             .query_map(params![peer, before, before, before_id], |r| {
                 Ok((

@@ -128,6 +128,11 @@ pub fn cancel(s: &AppState, v: &Value) -> Result<Value> {
     }
     Ok(json!(true))
 }
+pub fn cancel_all(s: &AppState) {
+    for token in s.transfers.tokens.lock().unwrap().values() {
+        token.cancel();
+    }
+}
 pub fn store(s: &AppState, v: &Value) -> Result<()> {
     let raw = secure::seal(s, &v.to_string())?;
     s.db.lock().unwrap().execute(
@@ -294,10 +299,16 @@ pub fn file_hash(path: &Path) -> Result<String> {
     }
     Ok(format!("{:x}", hash.finalize()))
 }
-fn client() -> Result<reqwest::Client> {
+fn client(s: &AppState) -> Result<reqwest::Client> {
     Ok(reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(3600))
+        .timeout(std::time::Duration::from_secs(
+            if identity::config(s)?["mode"] == "automatic" {
+                120
+            } else {
+                3600
+            },
+        ))
         .redirect(reqwest::redirect::Policy::none())
         .build()?)
 }
@@ -314,28 +325,176 @@ async fn authorization(s: &AppState, hash: &str) -> Result<String> {
         base64::engine::general_purpose::STANDARD.encode(event.as_json())
     ))
 }
-pub async fn upload(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value) -> Result<Value> {
-    let result = upload_inner(app.clone(), s.clone(), v).await;
-    if let Err(ref e) = result {
-        if let Some(id) = v["id"].as_str() {
-            report(&s, app.as_ref(), id, "failed", 0, 0, Some(e.to_string()));
-        }
-    }
-    result
+#[derive(Debug)]
+struct ProviderFailure {
+    status: u16,
+    reason: String,
+    retry_after: i64,
+    clock: bool,
 }
-async fn upload_inner(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value) -> Result<Value> {
+impl std::fmt::Display for ProviderFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.reason)
+    }
+}
+impl std::error::Error for ProviderFailure {}
+async fn rejected(response: reqwest::Response) -> anyhow::Error {
+    let status = response.status().as_u16();
+    let clock = crate::social_network::clock_error(response.headers());
+    let retry_after = response
+        .headers()
+        .get("retry-after")
+        .and_then(|x| x.to_str().ok())
+        .and_then(|s| {
+            s.parse::<i64>().ok().or_else(|| {
+                httpdate::parse_http_date(s).ok().map(|time| {
+                    time.duration_since(std::time::SystemTime::now())
+                        .map(|d| d.as_secs().min(3600) as i64)
+                        .unwrap_or(5)
+                })
+            })
+        })
+        .unwrap_or(60)
+        .clamp(5, 3600);
+    let mut reason = response
+        .headers()
+        .get("x-reason")
+        .and_then(|x| x.to_str().ok())
+        .unwrap_or("")
+        .to_owned();
+    let mut stream = response.bytes_stream();
+    let mut bytes = vec![];
+    while let Some(Ok(chunk)) = stream.next().await {
+        if bytes.len() + chunk.len() > 2048 {
+            break;
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    reason.push_str(&String::from_utf8_lossy(&bytes));
+    let timestamp = reason.to_ascii_lowercase();
+    let clock = clock.filter(|_| {
+        matches!(status, 400 | 401 | 403)
+            && (timestamp.contains("time")
+                || timestamp.contains("future")
+                || timestamp.contains("created"))
+    });
+    let message = clock.clone().unwrap_or_else(|| {
+        format!(
+            "File service rejected this upload (HTTP {status}). {}",
+            reason.chars().take(400).collect::<String>()
+        )
+    });
+    ProviderFailure {
+        status,
+        reason: message,
+        retry_after,
+        clock: clock.is_some(),
+    }
+    .into()
+}
+pub async fn upload(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value) -> Result<Value> {
+    let targets = crate::social_network::providers(&identity::config(&s)?);
+    upload_providers(app, s, v, targets).await
+}
+pub(crate) async fn upload_providers(
+    app: Option<tauri::AppHandle>,
+    s: crate::Shared,
+    v: &Value,
+    targets: Vec<String>,
+) -> Result<Value> {
     let id = v["id"].as_str().context("Attachment missing")?.to_owned();
-    let mut media = load(&s, &id)?;
     let cfg = identity::config(&s)?;
     ensure!(
-        cfg["mediaConsent"] == true,
-        "Authorize encrypted uploads to your selected storage provider in Profile → Network"
+        cfg["enabled"] == true,
+        "You are offline. Your draft and files are still on this computer."
     );
-    let server = cfg["mediaServer"].as_str().unwrap_or("");
     ensure!(
-        !server.is_empty(),
-        "Choose a Blossom storage provider first"
+        cfg["mediaConsent"] == true,
+        "Allow encrypted file uploads in Settings → Network, or choose Automatic."
     );
+    let token = CancellationToken::new();
+    begin(&s, &id, &token)?;
+    let _guard = TransferGuard {
+        state: s.clone(),
+        app: app.clone(),
+        id: id.clone(),
+        token: token.clone(),
+    };
+    let _slot = s.transfers.slots.acquire().await?;
+    let media = load(&s, &id)?;
+    let size = media["encryptedSize"].as_u64().unwrap_or(0);
+    let plain_size = media["size"].as_u64().unwrap_or(size);
+    let mut errors = vec![];
+    for server in targets {
+        ensure!(!token.is_cancelled(), "Upload canceled");
+        let blocked:bool=s.db.lock().unwrap().query_row("SELECT EXISTS(SELECT 1 FROM storage_health WHERE service=? AND until>? AND (min_size=0 OR min_size<=?))",rusqlite::params![server,db::now(),plain_size as i64],|r|r.get(0))?;
+        if blocked {
+            errors.push(format!(
+                "{server}: temporarily unavailable after a previous rejection"
+            ));
+            continue;
+        }
+        report(&s, app.as_ref(), &id, "connecting", 0, size, None);
+        let attempt = tokio::select! {_=token.cancelled()=>bail!("Upload canceled"),result=upload_inner(app.clone(), s.clone(), v, &server, &token)=>result};
+        match attempt {
+            Ok(value) => {
+                s.db.lock()
+                    .unwrap()
+                    .execute("DELETE FROM storage_health WHERE service=?", [server])?;
+                return Ok(value);
+            }
+            Err(e) => {
+                if token.is_cancelled() {
+                    return Err(e);
+                }
+                let failure = e.downcast_ref::<ProviderFailure>();
+                if failure.is_some_and(|f| f.clock) {
+                    return Err(e);
+                }
+                let status = failure.map(|f| f.status).unwrap_or(0);
+                let delay = if matches!(status, 413 | 415) {
+                    86400
+                } else {
+                    failure.map(|f| f.retry_after).unwrap_or(60)
+                };
+                s.db.lock().unwrap().execute(
+                    "INSERT OR REPLACE INTO storage_health VALUES(?,?,?,?,?)",
+                    rusqlite::params![
+                        server,
+                        db::now() + delay,
+                        status,
+                        if status == 413 { plain_size as i64 } else { 0 },
+                        e.to_string()
+                    ],
+                )?;
+                errors.push(format!("{server}: {e}"));
+            }
+        }
+    }
+    let error = format!(
+        "Could not upload. Your draft is preserved. {}",
+        errors.join(" · ")
+    );
+    report(
+        &s,
+        app.as_ref(),
+        &id,
+        "failed",
+        0,
+        size,
+        Some(error.clone()),
+    );
+    bail!(error)
+}
+async fn upload_inner(
+    app: Option<tauri::AppHandle>,
+    s: crate::Shared,
+    v: &Value,
+    server: &str,
+    token: &CancellationToken,
+) -> Result<Value> {
+    let id = v["id"].as_str().context("Attachment missing")?.to_owned();
+    let mut media = load(&s, &id)?;
     identity::validate_endpoint(server, false)?;
     let path = PathBuf::from(
         media["encryptedPath"]
@@ -346,16 +505,6 @@ async fn upload_inner(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value
         path.is_file(),
         "Staged file missing. Select the original file again."
     );
-    let token = CancellationToken::new();
-    begin(&s, &id, &token)?;
-    let _guard = TransferGuard {
-        state: s.clone(),
-        app: app.clone(),
-        id: id.clone(),
-        token: token.clone(),
-    };
-    report(&s, app.as_ref(), &id, "waiting", 0, 0, None);
-    let _slot = s.transfers.slots.acquire().await?;
     let hash = media["encryptedSha256"]
         .as_str()
         .context("Encrypted hash missing")?;
@@ -363,7 +512,7 @@ async fn upload_inner(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value
         .as_u64()
         .context("Encrypted size missing")?;
     let auth = authorization(&s, hash).await?;
-    let http = client()?;
+    let http = client(&s)?;
     let url = format!("{server}/upload");
     let request = http
         .head(&url)
@@ -373,7 +522,9 @@ async fn upload_inner(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value
         .header("X-Content-Length", size)
         .send();
     let preflight = tokio::select! {_ = token.cancelled()=>bail!("Upload canceled"),r=request=>r?};
-    ensure!(preflight.status().is_success()||matches!(preflight.status().as_u16(),404|405),"Storage preflight refused the encrypted file (HTTP {}). The provider controls file types, quota, cost and retention.",preflight.status().as_u16());
+    if !(preflight.status().is_success() || matches!(preflight.status().as_u16(), 404 | 405)) {
+        return Err(rejected(preflight).await);
+    }
     let file = tokio::fs::File::open(&path).await?;
     let total = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let sent = total.clone();
@@ -399,11 +550,9 @@ async fn upload_inner(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value
         chunk
     });
     let response = tokio::select! {_ = token.cancelled()=>bail!("Upload canceled. BUD-02 retries from the beginning."),r=http.put(&url).header("Authorization",auth).header("Content-Type","application/octet-stream").header("Content-Length",size).header("X-SHA-256",hash).body(reqwest::Body::wrap_stream(stream)).send()=>r?};
-    ensure!(
-        response.status().is_success(),
-        "Upload failed (HTTP {}). No storage or payment guarantee is implied; retry explicitly.",
-        response.status().as_u16()
-    );
+    if !response.status().is_success() {
+        return Err(rejected(response).await);
+    }
     let mut chunks = response.bytes_stream();
     let mut bytes = vec![];
     while let Some(chunk) = chunks.next().await {
@@ -421,18 +570,12 @@ async fn upload_inner(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value
     let retrieval = descriptor["url"]
         .as_str()
         .context("Storage returned no retrieval URL")?;
-    let u = identity::validate_endpoint(retrieval, false)?;
-    let origin = identity::validate_endpoint(server, false)?;
-    ensure!(
-        u.origin() == origin.origin(),
-        "Storage redirected retrieval to an unapproved host"
-    );
+    crate::social_network::retrieval_allowed(server, retrieval)?;
     media["url"] = json!(retrieval);
     media["provider"] = json!(server);
     media["state"] = json!("uploaded");
     store(&s, &media)?;
     report(&s, app.as_ref(), &id, "uploaded", size, size, None);
-    s.transfers.tokens.lock().unwrap().remove(&id);
     Ok(public(&media))
 }
 pub fn from_message(s: &AppState, message: &str, id: &str) -> Result<Value> {
@@ -463,17 +606,22 @@ async fn retrieve_inner(
     s: crate::Shared,
     v: &Value,
 ) -> Result<Value> {
-    use tokio::io::AsyncWriteExt;
     let id = v["id"].as_str().context("Attachment missing")?.to_owned();
     uuid::Uuid::parse_str(&id)?;
     let m = from_message(&s, v["message"].as_str().context("Message missing")?, &id)?;
+    retrieve_reference(app, s, m).await
+}
+pub async fn retrieve_reference(
+    app: Option<tauri::AppHandle>,
+    s: crate::Shared,
+    m: Value,
+) -> Result<Value> {
+    use tokio::io::AsyncWriteExt;
+    let id = m["id"].as_str().context("Attachment missing")?.to_owned();
+    uuid::Uuid::parse_str(&id)?;
     let url = m["url"].as_str().context("Attachment URL missing")?;
-    let u = identity::validate_endpoint(url, false)?;
     let provider = m["provider"].as_str().context("Provider missing")?;
-    ensure!(
-        u.origin() == identity::validate_endpoint(provider, false)?.origin(),
-        "Attachment source differs from its declared provider"
-    );
+    crate::social_network::retrieval_allowed(provider, url)?;
     let size = m["encryptedSize"]
         .as_u64()
         .context("Attachment size missing")?;
@@ -529,7 +677,7 @@ async fn retrieve_inner(
             .map(|m| m.len())
             .unwrap_or(0);
         ensure!(offset <= size, "Partial file exceeds expected size");
-        let mut q = client()?.get(url);
+        let mut q = client(&s)?.get(url);
         if offset > 0 {
             q = q.header(reqwest::header::RANGE, format!("bytes={offset}-"));
         }

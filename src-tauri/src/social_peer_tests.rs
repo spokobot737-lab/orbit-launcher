@@ -29,7 +29,7 @@ async fn peer_wallet_proof_and_independent_expiring_activity() -> Result<()> {
     let mut updated = identity::profile(&a)?;
     updated["bio"] = json!("Synthetic updated bio");
     identity::save(&a, &updated)?;
-    social::share_profile(&a).await?;
+    profile_sync::work(None, a.clone()).await?;
     social::flush(&a).await?;
     eventually(|| identity::contact(&b, &aid).is_ok_and(|c| c["bio"] == "Synthetic updated bio"))
         .await?;

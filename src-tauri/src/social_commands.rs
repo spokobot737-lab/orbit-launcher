@@ -2,9 +2,20 @@ use crate::{identity, media, publisher, social, wallet, Shared};
 use anyhow::Result;
 use serde_json::{json, Value};
 pub async fn dispatch(app: &tauri::AppHandle, s: Shared, op: &str, v: Value) -> Result<Value> {
-    match op {
+    let signal = s.clone();
+    let result = match op {
         "orbit_profile" => identity::profile(&s),
-        "orbit_profile_share" => social::share_profile(&s).await,
+        "orbit_profile_share" => {
+            crate::profile_sync::retry(&s)?;
+            Ok(json!(true))
+        }
+        "orbit_profile_sync_status" => crate::profile_sync::status(&s),
+        "orbit_profile_retry" => crate::profile_sync::retry(&s),
+        "orbit_contact_profile_retry" => crate::profile_sync::retry_contact(&s, &v),
+        "orbit_social_open" => {
+            social::wake(Some(app.clone()), s.clone());
+            social::status(&s).await
+        }
         "orbit_profile_image" => {
             let value = v.clone();
             tokio::task::spawn_blocking(move || identity::profile_image(&value)).await?
@@ -35,22 +46,32 @@ pub async fn dispatch(app: &tauri::AppHandle, s: Shared, op: &str, v: Value) -> 
         "orbit_config" => identity::config(&s),
         "orbit_config_save" => {
             let result = identity::save_config(&s, &v)?;
+            if result["enabled"] != true {
+                media::cancel_all(&s);
+            }
             social::stop(&s).await;
             if result["enabled"] == true {
-                social::start(Some(app.clone()), s.clone()).await?;
+                social::wake(Some(app.clone()), s.clone());
             }
+            crate::profile_sync::mark_dirty(&s)?;
             Ok(result)
         }
         "orbit_contacts" => identity::contacts(&s),
         "orbit_invitation" => social::invitation(&s).await,
         "orbit_invite_accept" => {
             let result = social::import_invitation(&s, &v).await?;
-            social::flush(&s).await?;
+            let state = s.clone();
+            tokio::spawn(async move {
+                let _ = social::flush(&state).await;
+            });
             Ok(result)
         }
         "orbit_friend_accept" => {
             let result = social::accept(&s, &v).await?;
-            social::flush(&s).await?;
+            let state = s.clone();
+            tokio::spawn(async move {
+                let _ = social::flush(&state).await;
+            });
             Ok(result)
         }
         "orbit_block" => identity::block(&s, &v),
@@ -65,11 +86,22 @@ pub async fn dispatch(app: &tauri::AppHandle, s: Shared, op: &str, v: Value) -> 
         }
         "orbit_retry" => {
             let result = social::retry(&s, &v)?;
-            social::flush(&s).await?;
+            let state = s.clone();
+            tokio::spawn(async move {
+                let _ = social::flush(&state).await;
+            });
             Ok(result)
         }
-        "orbit_network_start" => social::start(Some(app.clone()), s).await,
+        "orbit_network_start" => {
+            social::stop(&s).await;
+            social::wake(Some(app.clone()), s.clone());
+            social::status(&s).await
+        }
         "orbit_network_stop" => {
+            media::cancel_all(&s);
+            let mut cfg = identity::config(&s)?;
+            cfg["enabled"] = json!(false);
+            identity::save_config(&s, &cfg)?;
             social::stop(&s).await;
             Ok(json!(true))
         }
@@ -95,5 +127,27 @@ pub async fn dispatch(app: &tauri::AppHandle, s: Shared, op: &str, v: Value) -> 
         "orbit_media_save" => media::save_original(&s, &v).await,
         "orbit_publisher" => Ok(publisher::status()),
         _ => anyhow::bail!("Unknown Orbit operation"),
+    };
+    if result.is_ok()
+        && [
+            "orbit_profile_save",
+            "orbit_profile_share",
+            "orbit_profile_retry",
+            "orbit_contact_profile_retry",
+            "orbit_invitation",
+            "orbit_invite_accept",
+            "orbit_friend_accept",
+            "orbit_send",
+            "orbit_connection_visibility",
+            "orbit_connection_manual",
+            "orbit_connection_disconnect",
+            "orbit_connection_oauth",
+            "orbit_bluesky_connect",
+        ]
+        .contains(&op)
+    {
+        social::wake(Some(app.clone()), signal.clone());
+        crate::profile_sync::schedule(Some(app.clone()), signal);
     }
+    result
 }

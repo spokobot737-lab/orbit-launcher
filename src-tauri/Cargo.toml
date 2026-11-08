@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 
 [build-dependencies]
@@ -26,6 +26,7 @@ shell-words = "1"
 url = "2"
 anyhow = "1"
 dunce = "1"
+httpdate = "1"
 md5 = "0.8"
 regex = "1"
 windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }

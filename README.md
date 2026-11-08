@@ -1,12 +1,12 @@
 # Orbit Launcher
 
-A lightweight, local-first Windows launcher built with **Rust, Tauri 2, React/TypeScript, and SQLite**. No Orbit account or publisher-operated backend is required. Social networking uses explicitly selected third-party relays/storage.
+A lightweight, local-first Windows launcher built with **Rust, Tauri 2, React/TypeScript, and SQLite**. No Orbit account or publisher-operated backend is required. Social networking connects directly to disclosed third-party operators, with automatic defaults and optional custom settings.
 
 **Status: integration preview, not a feature-complete production release.** Roblox's personalized Home API is restricted, and Microsoft/Minecraft sign-in needs the publisher's own approved application registration. These limitations are visible in the app; no mock catalog or borrowed client ID is shipped.
 
 ## Download
 
-Windows x64 downloads are published under [GitHub Releases](https://github.com/spokobot737-lab/orbit-launcher/releases). Use the `Orbit_0.2.0_x64-setup.exe` installer. A standalone `orbit-launcher.exe` is also provided; it needs Microsoft Edge WebView2 Runtime installed.
+Windows x64 downloads are published under [GitHub Releases](https://github.com/spokobot737-lab/orbit-launcher/releases). Use the `Orbit_0.3.0_x64-setup.exe` installer. A standalone `orbit-launcher.exe` is also provided; it needs Microsoft Edge WebView2 Runtime installed.
 
 The build is unsigned. A production release should be code-signed. Roblox must already be installed and signed in through its official application.
 
@@ -22,7 +22,15 @@ The build is unsigned. A production release should be code-signed. Roblox must a
 - EXE/Windows shortcut import using the file picker or drag-and-drop, Windows shortcut argument parsing, extracted icons, image selection, editable arguments/working directory, and direct process launching.
 - Installation progress, process exit status, bounded launch logs, repair, readable errors, and stay/minimize/exit behavior.
 
-## New in 0.2: social prototype
+## New in 0.3: simpler social networking
+
+- Create a profile and invitation without entering server URLs. Automatic mode uses auth.nostr1.com and relay.primal.net for encrypted messages, nostr.download and files.sovbit.host for encrypted files, with bounded fallback.
+- Edit the existing profile card in place. Avatar and banner previews remain drafts until Save; Cancel restores the saved profile. Signed, ordered updates automatically synchronize the complete profile to accepted friends.
+- Friend profiles remain cached locally and can be retrieved while their owner is closed, subject to operator retention. Persistent profiles do not imply online presence; game and music activity expire separately.
+- Conversations combines the searchable friend list, invitations, pending requests and chats. Accepted friends appear before the first message. Wallet, recovery, privacy and advanced network controls live in Settings.
+- Existing identities, wallets, conversations, launcher data, custom endpoints and intentional offline settings are preserved.
+
+## Social capabilities
 
 - Local Orbit profiles, optional separate EVM wallet, peer-verified SIWE, encrypted export/restore and Windows-protected keys.
 - Accepted friendships through signed invitations, real NIP-17 encrypted conversations, durable outbox, receipts, reconnection and blocking.
@@ -30,7 +38,7 @@ The build is unsigned. A production release should be code-signed. Roblox must a
 - Profile → Connections distinguishes authenticated OAuth identities from manual links and unavailable providers. Public publisher configuration replaces developer-ID entry in ordinary settings.
 - Explicit, expiring game/music activity with separate privacy controls, process detection and Windows media-session fallback. Spotify playback requires publisher API access.
 
-**Read [social setup and recovery](docs/SOCIAL_SETUP.md), [publisher registrations](docs/PUBLISHER_REGISTRATION.md), [architecture comparison](docs/SOCIAL_ARCHITECTURE.md), and [social verification](docs/SOCIAL_VERIFICATION.md).** Choose existing relay/storage operators explicitly; this release includes no guaranteed free public messaging or encrypted GB-file service. OAuth provider flows remain unverified without real registrations/user authorization. The prototype is not a production security-audited messenger.
+**Read [social setup and recovery](docs/SOCIAL_SETUP.md), [publisher registrations](docs/PUBLISHER_REGISTRATION.md), [architecture comparison](docs/SOCIAL_ARCHITECTURE.md), and [0.3 verification](docs/SOCIAL_VERIFICATION_0.3.md).** Automatic files have a tested local cap of 25 MiB, not a permanent free quota, SLA or GB-upload promise. OAuth provider flows remain unverified without real registrations/user authorization. The prototype is not a production security-audited messenger.
 
 ## Develop on Windows
 
@@ -54,7 +62,7 @@ Build outputs:
 
 ```text
 src-tauri/target/release/orbit-launcher.exe
-src-tauri/target/release/bundle/nsis/Orbit_0.2.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Orbit_0.3.0_x64-setup.exe
 ```
 
 ## Minecraft setup

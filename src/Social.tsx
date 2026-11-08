@@ -1,3 +1,6 @@
+import ProfileCard from "./ProfileCard";
+import NetworkSettings from "./NetworkSettings";
+import ProfileActivity, { SharedActivity } from "./ProfileActivity";
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { listen } from "@tauri-apps/api/event";
@@ -62,6 +65,8 @@ type Contact = {
   connections?: Record<string, { name?: string; url?: string }>;
   state: string;
   wallet?: any;
+  banner?: string;
+  imagesPending?: boolean;
 };
 type Attachment = {
   id: string;
@@ -189,7 +194,8 @@ export default function SocialView({
     [notice, setNotice] = useState(""),
     [busy, setBusy] = useState(""),
     [loaded, setLoaded] = useState(false),
-    [edit, setEdit] = useState(false),
+    [sync, setSync] = useState<any>({}),
+    [friendQuery, setFriendQuery] = useState(""),
     [invite, setInvite] = useState<any>(null),
     [code, setCode] = useState(""),
     [manual, setManual] = useState(""),
@@ -218,6 +224,7 @@ export default function SocialView({
     setStatus(network);
     setAccount(mc);
     setActivity(act);
+    setSync(await api("orbit_profile_sync_status"));
     setLoaded(true);
   }, []);
   const run = async (
@@ -239,6 +246,7 @@ export default function SocialView({
     }
   };
   useEffect(() => {
+    api("orbit_social_open").catch(() => {});
     load().catch((e) => {
       setError(errorText(e));
       setLoaded(true);
@@ -280,28 +288,22 @@ export default function SocialView({
       "Account identity connected",
     );
   };
-  const chooseImage = async (banner: boolean) => {
-    const path = await open({
-      filters: [
-        { name: "Profile image", extensions: ["png", "jpg", "jpeg", "webp"] },
-      ],
-    });
-    if (typeof path === "string") {
-      const image = await api<string>("orbit_profile_image", { path, banner });
-      setProfile((p) => ({ ...p!, [banner ? "banner" : "avatar"]: image }));
-      setEdit(true);
+  const saveProfile = async (v: Profile): Promise<Profile> => {
+    setBusy("profile");
+    setError("");
+    try {
+      const saved = await api<Profile>("orbit_profile_save", v);
+      setProfile(saved);
+      await onProfileChanged();
+      await load();
+      return saved;
+    } catch (e) {
+      setError(errorText(e));
+      throw e;
+    } finally {
+      setBusy("");
     }
   };
-  const saveProfile = (v: Profile) =>
-    run(
-      "profile",
-      async () => {
-        await api("orbit_profile_save", v);
-        setEdit(false);
-        await onProfileChanged();
-      },
-      "Your profile is saved on this device",
-    );
   return (
     <div className="social-view">
       {error && (
@@ -321,7 +323,7 @@ export default function SocialView({
       )}
       {!loaded ? (
         <div className="loading">Opening your space…</div>
-      ) : !profile ? (
+      ) : !profile && page !== "Settings" ? (
         <>
           <Heading
             eyebrow="A SPACE THAT’S YOURS"
@@ -352,7 +354,7 @@ export default function SocialView({
                 gameVisibility: false,
                 musicVisibility: false,
               }}
-              onSave={saveProfile}
+              onSave={(v) => void saveProfile(v).catch(() => {})}
               busy={!!busy}
             />
             <button
@@ -369,130 +371,52 @@ export default function SocialView({
       ) : (
         <>
           <div className="social-topline">
-            <span className="social-section-label">
-              YOUR PEOPLE. YOUR SPACE.
+            <span
+              className={`network-badge ${(status.phase || "").toLowerCase()}`}
+            >
+              {status.phase || "Connecting"}
             </span>
             <div className="social-tabs">
-              {[
-                "Profile",
-                "Connections",
-                "Friends",
-                "Conversations",
-                "Activity",
-              ].map((p) => (
+              {["Profile", "Connections", "Conversations"].map((p) => (
                 <button
                   key={p}
                   className={page === p ? "selected" : ""}
                   onClick={() => onNavigate(p)}
                 >
                   {p}
-                  {p === "Friends" && incoming.length > 0 && (
-                    <span>{incoming.length}</span>
-                  )}
                 </button>
               ))}
             </div>
           </div>
-          {page === "Profile" && (
+          {page === "Profile" && profile && (
             <>
-              <section className="profile-hero">
-                <div
-                  className="profile-banner"
-                  style={
-                    profile.banner
-                      ? { backgroundImage: `url(${profile.banner})` }
-                      : {}
-                  }
-                >
-                  <div className="profile-orbit-art" />
-                  <button
-                    className="banner-edit"
-                    onClick={() => run("image", () => chooseImage(true))}
-                  >
-                    <Camera size={14} /> Change cover
-                  </button>
-                </div>
-                <div className="profile-overlap">
-                  <button
-                    onClick={() => run("image", () => chooseImage(false))}
-                  >
-                    <Avatar person={profile} size="large" />
-                    <span className="avatar-edit">
-                      <Camera size={13} />
-                    </span>
-                  </button>
-                  <div className="profile-actions">
-                    <button
-                      className="secondary"
-                      disabled={!!busy || !accepted.length}
-                      onClick={() =>
-                        run(
-                          "share-profile",
-                          () => api("orbit_profile_share"),
-                          "Saved profile and visible links queued for accepted friends.",
-                        )
-                      }
-                    >
-                      Share profile update
-                    </button>
-                    <button
-                      className="secondary"
-                      onClick={() => setEdit(!edit)}
-                    >
-                      <UserRound size={14} /> Edit profile
-                    </button>
-                    <button
-                      className="secondary"
-                      onClick={() => onNavigate("Connections")}
-                    >
-                      <Link2 size={14} /> Connections
-                    </button>
-                  </div>
-                </div>
-                <div className="profile-identity">
-                  <p className="eyebrow">ORBIT PROFILE</p>
-                  <h1>{profile.name}</h1>
-                  <p>
-                    {profile.bio ||
-                      "A little more you. Add a bio to make this space your own."}
-                  </p>
-                  <button
-                    className="identity-copy"
-                    onClick={() => {
-                      navigator.clipboard.writeText(profile.npub);
-                      setNotice("Public identity copied");
-                    }}
-                  >
-                    <ShieldCheck size={13} />
-                    {short(profile.npub)}
-                    <Copy size={12} />
-                  </button>
-                </div>
-                <div className="profile-counts">
-                  <button onClick={() => onNavigate("Friends")}>
-                    <strong>{accepted.length}</strong>
-                    <span>Friends</span>
-                  </button>
-                  <button onClick={() => onNavigate("Connections")}>
-                    <strong>
-                      {Object.keys(connections).length + (account ? 1 : 0)}
-                    </strong>
-                    <span>Connections</span>
-                  </button>
-                  <span>
-                    <HardDrive size={13} /> Saved on this device
-                  </span>
-                </div>
-              </section>
-              {edit && (
-                <div className="social-panel">
-                  <ProfileForm
-                    profile={profile}
-                    onSave={saveProfile}
-                    busy={!!busy}
-                  />
-                </div>
-              )}
+              <ProfileCard
+                profile={profile}
+                connections={connections}
+                count={accepted.length}
+                sync={sync}
+                onSave={saveProfile}
+                onConnections={() => onNavigate("Connections")}
+                onFriends={() => onNavigate("Conversations")}
+                onRetry={() => run("sync", () => api("orbit_profile_retry"))}
+              />
+              <ProfileActivity
+                activity={activity}
+                profile={profile}
+                busy={!!busy}
+                onRun={run}
+                onChanged={load}
+                onSettings={() => onNavigate("Settings")}
+              />
+            </>
+          )}
+          {page === "Settings" && (
+            <>
+              <Heading
+                eyebrow="PREFERENCES"
+                title="Settings"
+                subtitle="Wallet, recovery, privacy and connection preferences."
+              />
               <div className="social-two-col">
                 <section className="social-panel wallet-panel">
                   <div className="panel-heading">
@@ -500,7 +424,7 @@ export default function SocialView({
                       <Wallet size={19} />
                     </span>
                     <div>
-                      <h2>A wallet, if you want one.</h2>
+                      <h2>Wallet</h2>
                       <p>Identity without a balance requirement.</p>
                     </div>
                   </div>
@@ -593,7 +517,7 @@ export default function SocialView({
                       <LockKeyhole size={19} />
                     </span>
                     <div>
-                      <h2>Your recovery plan</h2>
+                      <h2>Backup and recovery</h2>
                       <p>Keep more than a wallet address.</p>
                     </div>
                   </div>
@@ -616,6 +540,17 @@ export default function SocialView({
                   >
                     <Download size={14} /> Export encrypted backup
                   </button>
+                  {!profile && (
+                    <button
+                      className="secondary"
+                      onClick={() => {
+                        setBackup("restore");
+                        setPassphrase("");
+                      }}
+                    >
+                      Restore Orbit backup
+                    </button>
+                  )}
                 </section>
               </div>
               <section className="social-panel">
@@ -624,7 +559,7 @@ export default function SocialView({
                     <Eye size={19} />
                   </span>
                   <div>
-                    <h2>Share on your terms</h2>
+                    <h2>Privacy</h2>
                     <p>Game and music activity have separate controls.</p>
                   </div>
                 </div>
@@ -637,9 +572,14 @@ export default function SocialView({
                     </p>
                   </div>
                   <Toggle
-                    value={profile.gameVisibility}
+                    label="Game activity visibility"
+                    disabled={!profile || !!busy}
+                    value={!!profile?.gameVisibility}
                     onChange={(v) =>
-                      saveProfile({ ...profile, gameVisibility: v })
+                      profile &&
+                      void saveProfile({ ...profile, gameVisibility: v }).catch(
+                        () => {},
+                      )
                     }
                   />
                 </div>
@@ -652,31 +592,30 @@ export default function SocialView({
                     </p>
                   </div>
                   <Toggle
-                    value={profile.musicVisibility}
+                    label="Music activity visibility"
+                    disabled={!profile || !!busy}
+                    value={!!profile?.musicVisibility}
                     onChange={(v) =>
-                      saveProfile({ ...profile, musicVisibility: v })
+                      profile &&
+                      void saveProfile({
+                        ...profile,
+                        musicVisibility: v,
+                      }).catch(() => {})
                     }
                   />
                 </div>
               </section>
-              <NetworkPanel
+              <NetworkSettings
                 config={config}
                 status={status}
-                busy={!!busy}
-                onSave={(v) =>
-                  run(
-                    "network",
-                    () => api("orbit_config_save", v),
-                    "Network preferences saved",
-                  )
-                }
-                onReconnect={() =>
-                  run(
-                    "network",
-                    () => api("orbit_network_start"),
-                    "Relay connections started",
-                  )
-                }
+                onSave={async (v) => {
+                  await api("orbit_config_save", v);
+                  await load();
+                }}
+                onReconnect={async () => {
+                  await api("orbit_network_start");
+                  await load();
+                }}
               />
             </>
           )}
@@ -827,11 +766,11 @@ export default function SocialView({
               </div>
             </>
           )}
-          {page === "Friends" && (
+          {page === "Conversations" && (
             <>
               <Heading
                 eyebrow="A SMALLER, BETTER CIRCLE"
-                title="Your people, on your terms."
+                title="Conversations"
                 subtitle="Friendship is accepted by both people. It isn’t a public follow."
                 action={
                   <button
@@ -912,31 +851,82 @@ export default function SocialView({
                   ))}
                 </section>
               )}
-              <VirtualFriends
-                contacts={contacts}
-                onChat={(c) => {
-                  setPeer(c.id);
-                  onNavigate("Conversations");
-                }}
-                onBlock={(c) =>
-                  run(c.id, () =>
-                    api("orbit_block", {
-                      id: c.id,
-                      blocked: c.state !== "blocked",
-                    }),
-                  )
-                }
-              />
+              <details className="friend-directory">
+                <summary>Friend list · {accepted.length} accepted</summary>
+                <input
+                  aria-label="Search friends"
+                  placeholder="Search friends…"
+                  value={friendQuery}
+                  onChange={(e) => setFriendQuery(e.target.value)}
+                />
+                <VirtualFriends
+                  contacts={accepted.filter((c) =>
+                    c.name.toLowerCase().includes(friendQuery.toLowerCase()),
+                  )}
+                  onChat={(c) => {
+                    setPeer(c.id);
+                    onNavigate("Conversations");
+                  }}
+                  onBlock={(c) =>
+                    run(c.id, () =>
+                      api("orbit_block", {
+                        id: c.id,
+                        blocked: c.state !== "blocked",
+                      }),
+                    )
+                  }
+                />
+              </details>
+              {contacts.some((c) => c.state === "outgoing") && (
+                <section className="social-panel">
+                  <h3>Pending outgoing requests</h3>
+                  {contacts
+                    .filter((c) => c.state === "outgoing")
+                    .map((c) => (
+                      <div className="friend-row" key={c.id}>
+                        <Avatar person={c} />
+                        <span>{c.name} · Waiting for acceptance</span>
+                        <button
+                          className="text-button"
+                          onClick={() =>
+                            run(c.id, () =>
+                              api("orbit_block", { id: c.id, blocked: true }),
+                            )
+                          }
+                        >
+                          Block
+                        </button>
+                      </div>
+                    ))}
+                </section>
+              )}
+              {contacts.some(
+                (c) => c.state === "blocked" || c.state === "removed",
+              ) && (
+                <details>
+                  <summary>Blocked and removed contacts</summary>
+                  <VirtualFriends
+                    contacts={contacts.filter(
+                      (c) => c.state === "blocked" || c.state === "removed",
+                    )}
+                    onChat={() => {}}
+                    onBlock={(c) =>
+                      run(c.id, () =>
+                        api("orbit_block", {
+                          id: c.id,
+                          blocked: c.state !== "blocked",
+                        }),
+                      )
+                    }
+                  />
+                </details>
+              )}
             </>
           )}
           {page === "Conversations" && (
             <>
-              <Heading
-                eyebrow="GOOD CONVERSATIONS TRAVEL"
-                title="Stay in the conversation."
-                subtitle="Encrypted between communication identities. Delivery means a recipient acknowledgment."
-              />
               <Conversations
+                activity={activity}
                 contacts={accepted}
                 peer={peer}
                 onPeer={setPeer}
@@ -945,16 +935,6 @@ export default function SocialView({
                 onNotice={setNotice}
               />
             </>
-          )}
-          {page === "Activity" && (
-            <ActivityPanel
-              activity={activity}
-              contacts={accepted}
-              profile={profile}
-              busy={!!busy}
-              onRun={run}
-              onChanged={load}
-            />
           )}
         </>
       )}
@@ -1172,15 +1152,21 @@ export default function SocialView({
 }
 function Toggle({
   value,
+  label,
+  disabled,
   onChange,
 }: {
   value: boolean;
+  label?: string;
+  disabled?: boolean;
   onChange: (v: boolean) => void;
 }) {
   return (
     <button
       className={`toggle ${value ? "on" : ""}`}
       role="switch"
+      aria-label={label}
+      disabled={disabled}
       aria-checked={value}
       onClick={() => onChange(!value)}
     >
@@ -1236,146 +1222,6 @@ function ProfileForm({
         required.
       </span>
     </form>
-  );
-}
-function NetworkPanel({
-  config,
-  status,
-  busy,
-  onSave,
-  onReconnect,
-}: {
-  config: any;
-  status: any;
-  busy: boolean;
-  onSave: (v: any) => void;
-  onReconnect: () => void;
-}) {
-  const [v, setV] = useState(config),
-    [relays, setRelays] = useState<string>((config.relays || []).join("\n"));
-  useEffect(() => {
-    setV(config);
-    setRelays((config.relays || []).join("\n"));
-  }, [config]);
-  return (
-    <section className="social-panel network-panel">
-      <div className="panel-heading">
-        <span className="panel-icon">
-          <Cloud size={19} />
-        </span>
-        <div>
-          <h2>Where your conversations travel</h2>
-          <p>
-            {status.running
-              ? "Relay client running · delivery still requires acknowledgment"
-              : "Network is off · your profile remains local"}
-          </p>
-        </div>
-      </div>
-      <p>
-        Choose up to three Nostr inbox relays and a Blossom file-storage
-        provider. They are independent services with their own access rules,
-        quotas, costs and retention. Orbit does not operate or pay for these
-        services.
-      </p>
-      <label>
-        Inbox relay URLs (one per line)
-        <textarea
-          rows={3}
-          value={relays}
-          onChange={(e) => setRelays(e.target.value)}
-          placeholder={"wss://your-trusted-relay.example"}
-        />
-      </label>
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={!!v.enabled}
-          onChange={(e) => setV({ ...v, enabled: e.target.checked })}
-        />{" "}
-        Enable connections to these relays. They can observe recipient
-        identities, IP addresses, sizes and timing.
-      </label>
-      <div className="form-grid">
-        <label>
-          Blossom storage URL
-          <input
-            type="url"
-            value={v.mediaServer || ""}
-            onChange={(e) => setV({ ...v, mediaServer: e.target.value })}
-            placeholder="https://your-storage.example"
-          />
-        </label>
-        <label>
-          Your local per-file safety limit (MiB)
-          <input
-            type="number"
-            min={1}
-            max={2048}
-            value={Math.round((v.maxFileBytes || 20971520) / 1048576)}
-            onChange={(e) =>
-              setV({ ...v, maxFileBytes: +e.target.value * 1048576 })
-            }
-          />
-        </label>
-      </div>
-      <label className="checkbox">
-        <input
-          type="checkbox"
-          checked={!!v.mediaConsent}
-          onChange={(e) => setV({ ...v, mediaConsent: e.target.checked })}
-        />{" "}
-        Authorize uploading encrypted copies to this provider when I send
-        attachments.
-      </label>
-      <p className="small-warning">
-        The local limit is not a storage guarantee. Many public providers reject
-        encrypted binary files or large uploads. No free encrypted GB-sized
-        public host has been established for this release. Uploads retry from
-        the beginning; verified range downloads can resume.
-      </p>
-      <button
-        className="text-button"
-        disabled={busy}
-        onClick={async () => {
-          try {
-            await api("orbit_media_clear_cache");
-          } catch (e) {
-            window.alert(errorText(e));
-          }
-        }}
-      >
-        Clear local media cache
-      </button>
-      <p className="muted">
-        Clears downloaded previews and staged copies. Select unsent files again
-        afterward; provider copies and message history are retained.
-      </p>
-      <div className="button-row">
-        <button
-          className="primary"
-          disabled={busy}
-          onClick={() =>
-            onSave({
-              ...v,
-              relays: relays
-                .split("\n")
-                .map((x) => x.trim())
-                .filter(Boolean),
-            })
-          }
-        >
-          Save network preferences
-        </button>
-        <button
-          className="secondary"
-          disabled={busy || !config.enabled}
-          onClick={onReconnect}
-        >
-          <RefreshCw size={14} /> Reconnect
-        </button>
-      </div>
-    </section>
   );
 }
 function VirtualFriends({
@@ -1447,6 +1293,7 @@ function VirtualFriends({
   );
 }
 function Conversations({
+  activity,
   contacts,
   peer,
   onPeer,
@@ -1454,6 +1301,7 @@ function Conversations({
   onError,
   onNotice,
 }: {
+  activity: any;
   contacts: Contact[];
   peer: string;
   onPeer: (p: string) => void;
@@ -1469,6 +1317,7 @@ function Conversations({
     [proofOpen, setProofOpen] = useState(false),
     [proofAddress, setProofAddress] = useState(""),
     [progress, setProgress] = useState<Record<string, any>>({});
+  const [searchFriends, setSearchFriends] = useState("");
   const listRef = useRef<HTMLDivElement>(null),
     [gallery, setGallery] = useState<{ url: string; name: string } | null>(
       null,
@@ -1570,22 +1419,34 @@ function Conversations({
     <div className="conversation-layout">
       <aside className="conversation-list">
         <div className="conversation-list-label">
-          DIRECT CONVERSATIONS <span>{contacts.length}</span>
+          FRIEND LIST <span>{contacts.length}</span>
         </div>
-        {contacts.map((c) => (
-          <button
-            key={c.id}
-            className={c.id === peer ? "selected" : ""}
-            onClick={() => onPeer(c.id)}
-          >
-            <Avatar person={c} />
-            <span>
-              <strong>{c.name}</strong>
-              <small>Accepted friend</small>
-            </span>
-            <ChevronRight size={13} />
-          </button>
-        ))}
+        <input
+          className="friend-search"
+          aria-label="Search conversation friends"
+          value={searchFriends}
+          onChange={(e) => setSearchFriends(e.target.value)}
+          placeholder="Search friends…"
+        />
+        {contacts
+          .filter((c) =>
+            c.name.toLowerCase().includes(searchFriends.toLowerCase()),
+          )
+          .map((c) => (
+            <button
+              key={c.id}
+              className={c.id === peer ? "selected" : ""}
+              onClick={() => onPeer(c.id)}
+            >
+              <Avatar person={c} />
+              <span>
+                <strong>{c.name}</strong>
+                <small>Accepted friend</small>
+                <SharedActivity activity={activity} peer={c.id} />
+              </span>
+              <ChevronRight size={13} />
+            </button>
+          ))}
         {!contacts.length && <p>Accepted friendships appear here.</p>}
       </aside>
       <section className="conversation">
@@ -1604,7 +1465,7 @@ function Conversations({
                 className="text-button"
                 onClick={() => setProofOpen(!proofOpen)}
               >
-                View profile / wallet proof
+                View profile
               </button>
             </>
           ) : (
@@ -1616,6 +1477,38 @@ function Conversations({
         </div>
         {selected && proofOpen && (
           <div className="contact-details">
+            {selected.banner && (
+              <div
+                className="friend-profile-banner"
+                style={{ backgroundImage: `url(${selected.banner})` }}
+              />
+            )}
+            <div className="friend-profile-heading">
+              <Avatar person={selected} size="large" />
+              <h2>{selected.name}</h2>
+            </div>
+            <small>
+              Saved friend profile · available copies do not indicate online
+              presence.
+            </small>
+            {selected.imagesPending && (
+              <div className="button-row">
+                <small>Some profile images are waiting to download.</small>
+                <button
+                  className="text-button"
+                  onClick={() =>
+                    api("orbit_contact_profile_retry", {
+                      peer: selected.id,
+                    }).catch((e) => onError(errorText(e)))
+                  }
+                >
+                  Retry images
+                </button>
+              </div>
+            )}
+
+            <SharedActivity activity={activity} peer={selected.id} />
+
             <p>{selected.bio || "No bio shared."}</p>
             <div className="button-row">
               {Object.entries(selected.connections || {}).map(
@@ -2054,234 +1947,6 @@ function AttachmentCard({
           : `Availability depends on ${file.url ? providerHost(file.url) : "the sender’s provider"}`}
       </small>
     </div>
-  );
-}
-function ActivityPanel({
-  activity,
-  contacts,
-  profile,
-  busy,
-  onRun,
-  onChanged,
-}: {
-  activity: any;
-  contacts: Contact[];
-  profile: Profile;
-  busy: boolean;
-  onRun: (k: string, a: () => Promise<any>, m?: string) => Promise<any>;
-  onChanged: () => Promise<void>;
-}) {
-  const [detected, setDetected] = useState<any[]>([]);
-  return (
-    <>
-      <Heading
-        eyebrow="A LITTLE CONTEXT, ONLY WHEN YOU CHOOSE"
-        title="What’s playing?"
-        subtitle="Game and music activity expire. Each has its own visibility control."
-      />
-      <div className="social-two-col">
-        <section className="social-panel">
-          <div className="panel-heading">
-            <span className="panel-icon">
-              <Gamepad2 size={21} />
-            </span>
-            <div>
-              <h2>Your game activity</h2>
-              <p>
-                {profile.gameVisibility
-                  ? "Sharing with accepted friends"
-                  : "Private · sharing off"}
-              </p>
-            </div>
-          </div>
-          {activity.game ? (
-            <div className="activity-feature">
-              <Gamepad2 size={30} />
-              <strong>{activity.game.name}</strong>
-              <span>
-                {activity.game.source === "orbit-process"
-                  ? "Launched and tracked by Orbit"
-                  : "Detected by exact executable path"}
-              </span>
-            </div>
-          ) : (
-            <Empty icon={Gamepad2} title="No tracked game">
-              Launch a Minecraft profile or mark a program for game activity.
-              External detection only scans processes when requested.
-            </Empty>
-          )}
-          <button
-            className="secondary"
-            disabled={busy}
-            onClick={() =>
-              onRun("detect", async () =>
-                setDetected(await api("orbit_games_detect")),
-              )
-            }
-          >
-            <RefreshCw size={14} /> Detect supported running games
-          </button>
-          {detected.map((g) => (
-            <div className="detected-game" key={g.id}>
-              <span>{g.name}</span>
-              <button
-                className="text-button"
-                onClick={() =>
-                  onRun(
-                    "select-game",
-                    () => api("orbit_game_select", { id: g.id }),
-                    "Game selected for activity",
-                  )
-                }
-              >
-                Use this game
-              </button>
-            </div>
-          ))}
-        </section>
-        <section className="social-panel">
-          <div className="panel-heading">
-            <span className="panel-icon">
-              <Music2 size={21} />
-            </span>
-            <div>
-              <h2>Your music activity</h2>
-              <p>
-                {profile.musicVisibility
-                  ? "Sharing with accepted friends"
-                  : "Private · sharing off"}
-              </p>
-            </div>
-          </div>
-          {activity.music && activity.music.expires * 1000 > Date.now() ? (
-            <div className="music-now">
-              {activity.music.artwork && (
-                <img src={activity.music.artwork} alt="Album artwork" />
-              )}
-              {activity.music.artworkUrl && (
-                <ProviderImage
-                  url={activity.music.artworkUrl}
-                  alt="Album artwork"
-                />
-              )}
-              <div>
-                <strong>{activity.music.title}</strong>
-                <span>{activity.music.artist}</span>
-                <small>
-                  {activity.music.playing ? "Playing" : "Paused"} ·{" "}
-                  {activity.music.source === "spotify-account"
-                    ? "Spotify account"
-                    : "This Windows device only"}
-                </small>
-              </div>
-            </div>
-          ) : (
-            <Empty icon={Music2} title="Listen on your terms">
-              Read Windows media-session metadata, or connect Spotify for
-              account-based playback where API access permits.
-            </Empty>
-          )}
-          <div className="button-row">
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() =>
-                onRun("music", async () => {
-                  await api("orbit_music_windows");
-                  await onChanged();
-                })
-              }
-            >
-              <RefreshCw size={13} /> Read Windows session
-            </button>
-            <button
-              className="secondary"
-              disabled={busy}
-              onClick={() =>
-                onRun("music", async () => {
-                  await api("orbit_music_spotify");
-                  await onChanged();
-                })
-              }
-            >
-              Read Spotify playback
-            </button>
-          </div>
-          <p className="small-warning">
-            Local Windows metadata cannot detect music playing only on another
-            device. No track link is invented when the session provides none.
-          </p>
-        </section>
-      </div>
-      <button
-        className="primary"
-        disabled={busy || (!profile.gameVisibility && !profile.musicVisibility)}
-        onClick={() =>
-          onRun(
-            "share",
-            () => api("orbit_activity_share"),
-            "Activity queued for accepted friends. It expires after 90 seconds.",
-          )
-        }
-      >
-        <Radio size={14} /> Share current activity
-      </button>
-      <section className="social-panel friend-activity">
-        <h2>Around your Orbit</h2>
-        {activity.friends?.filter((a: any) => a.expires * 1000 > Date.now())
-          .length ? (
-          activity.friends
-            .filter((a: any) => a.expires * 1000 > Date.now())
-            .map((a: any) => {
-              const friend = contacts.find((c) => c.id === a.peer),
-                body = a.activity.body;
-              return (
-                <div
-                  className="friend-row"
-                  key={`${a.peer}-${a.activity.kind}`}
-                >
-                  <Avatar person={friend} />
-                  <div>
-                    <strong>{friend?.name || short(a.peer)}</strong>
-                    <p>
-                      {a.activity.kind === "game_activity"
-                        ? `Playing ${body.name}`
-                        : `${body.title} · ${body.artist}`}
-                    </p>
-                  </div>
-                  <span className="expiry-label">
-                    Expires{" "}
-                    {new Date(a.expires * 1000).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}
-                  </span>
-                  {a.activity.kind === "game_activity" && (
-                    <button
-                      className="secondary"
-                      disabled={busy}
-                      onClick={() =>
-                        onRun(
-                          "launch-activity",
-                          () => api("orbit_activity_launch", { peer: a.peer }),
-                          "Local game started; this does not join their session.",
-                        )
-                      }
-                    >
-                      Launch locally
-                    </button>
-                  )}
-                </div>
-              );
-            })
-        ) : (
-          <Empty icon={Radio} title="No recent shared activity">
-            Friends only appear here when they choose to share. Activity is
-            never inferred from being online.
-          </Empty>
-        )}
-      </section>
-    </>
   );
 }
 function PublicPosts() {

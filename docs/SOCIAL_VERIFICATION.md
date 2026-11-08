@@ -1,5 +1,7 @@
 # Orbit 0.2 verification
 
+Historical baseline. Current changes and public-operator checks are in [0.3 verification](SOCIAL_VERIFICATION_0.3.md).
+
 2026-11-08, Windows x64 / Rust MSVC / Node 24. This is a prototype release. A successful build is not proof of external OAuth, public hosting availability or game-server admission.
 
 ## Tested with real implementations
