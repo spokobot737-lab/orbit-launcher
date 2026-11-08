@@ -42,10 +42,9 @@ pub fn signout(_s: &AppState) -> Result<Value> {
         Err(e) => Err(e.into()),
     }
 }
-fn client_id(s: &AppState) -> Result<String> {
-    let v = db::setting(s, "clientId")?;
-    let id = v.as_str().unwrap_or("");
-    ensure!(uuid::Uuid::parse_str(id).is_ok(),"Microsoft sign-in needs your own application registration. Add its public client ID in Settings. Minecraft API access may require Microsoft approval.");
+fn client_id(_s: &AppState) -> Result<String> {
+    let id = crate::publisher::id("microsoft").unwrap_or("");
+    ensure!(uuid::Uuid::parse_str(id).is_ok(),"Microsoft sign-in is not enabled in this Orbit build. The publisher must supply Orbit's approved registration; users do not need to register an application.");
     Ok(id.to_owned())
 }
 async fn token(s: &AppState, form: &[(&str, &str)]) -> Result<Value> {

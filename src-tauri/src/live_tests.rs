@@ -10,6 +10,8 @@ fn test_state(root: PathBuf) -> Result<AppState> {
         net: net::Network::new()?,
         install_lock: tokio::sync::Mutex::new(()),
         auth_lock: tokio::sync::Mutex::new(()),
+        social: social::Runtime::default(),
+        transfers: media::Transfers::new(),
     })
 }
 
@@ -147,6 +149,8 @@ async fn live_minecraft_install_repair_and_launch() -> Result<()> {
         net: net::Network::new()?,
         install_lock: tokio::sync::Mutex::new(()),
         auth_lock: tokio::sync::Mutex::new(()),
+        social: social::Runtime::default(),
+        transfers: media::Transfers::new(),
     };
     let loader = std::env::var("ORBIT_TEST_LOADER").unwrap_or("vanilla".into());
     let performance = std::env::var("ORBIT_TEST_PERFORMANCE").as_deref() == Ok("1");

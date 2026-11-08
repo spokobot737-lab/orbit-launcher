@@ -1,5 +1,7 @@
 # Verification report
 
+This document records the **0.1 baseline**. For the current 0.2 source/build and tested limitations, see [Social verification](SOCIAL_VERIFICATION.md).
+
 Date: 2026-11-08. Target: Windows x64, Node 24, Rust stable MSVC, Tauri 2.
 
 This is an integration preview. A complete production release satisfying every requested feature is blocked by personalized Roblox Home access and the missing publisher Microsoft registration.

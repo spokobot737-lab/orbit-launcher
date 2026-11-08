@@ -31,10 +31,15 @@ import {
   Minus,
   Pencil,
   Trash2,
+  UserRound,
+  Users,
+  MessageSquare,
+  Radio,
 } from "lucide-react";
 import { api, native, Item, Collection, errorText, imageUrl } from "./api";
 import "./style.css";
 import { Cover, Empty, Heading } from "./components";
+const SocialView = lazy(() => import("./Social"));
 const RobloxView = lazy(() => import("./Roblox"));
 const ExperienceDetail = lazy(() =>
   import("./Roblox").then((m) => ({ default: m.ExperienceDetail })),
@@ -47,7 +52,12 @@ type Page =
   | "Programs"
   | "Collections"
   | "Downloads"
-  | "Settings";
+  | "Settings"
+  | "Profile"
+  | "Connections"
+  | "Friends"
+  | "Conversations"
+  | "Activity";
 type Progress = {
   stage: string;
   done: number;
@@ -63,6 +73,10 @@ const nav = [
   { name: "Collections", icon: Folder },
   { name: "Downloads", icon: Download },
   { name: "Settings", icon: Settings },
+  { name: "Profile", icon: UserRound },
+  { name: "Friends", icon: Users },
+  { name: "Conversations", icon: MessageSquare },
+  { name: "Activity", icon: Radio },
 ] as const;
 function App() {
   const [page, setPage] = useState<Page>("Home"),
@@ -70,6 +84,8 @@ function App() {
     [collections, setCollections] = useState<Collection[]>([]),
     [settings, setSettings] = useState<Record<string, any>>({}),
     [account, setAccount] = useState<any>(null),
+    [publisher, setPublisher] = useState<any>({}),
+    [orbitProfile, setOrbitProfile] = useState<any>(null),
     [query, setQuery] = useState(""),
     [notice, setNotice] = useState(""),
     [error, setError] = useState(""),
@@ -87,6 +103,10 @@ function App() {
     [running, setRunning] = useState<Record<string, boolean>>({}),
     [selectedCollection, setSelectedCollection] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
+  const pageRef = useRef<Page>(page);
+  useEffect(() => {
+    pageRef.current = page;
+  }, [page]);
   const load = async () => {
     const [i, c, s, a] = await Promise.all([
       api<Item[]>("library"),
@@ -98,6 +118,8 @@ function App() {
     setCollections(c);
     setSettings(s);
     setAccount(a);
+    setPublisher(await api("orbit_publisher"));
+    setOrbitProfile(await api("orbit_profile"));
   };
   const perform = async (
     key: string,
@@ -145,7 +167,22 @@ function App() {
           );
       }),
       getCurrentWebview().onDragDropEvent((e) => {
-        if (e.payload.type === "drop") importPaths(e.payload.paths);
+        if (e.payload.type === "drop") {
+          if (pageRef.current === "Conversations")
+            window.dispatchEvent(
+              new CustomEvent("orbit-files", { detail: e.payload.paths }),
+            );
+          else {
+            const paths = e.payload.paths.filter((p) =>
+              /\.(exe|lnk)$/i.test(p),
+            );
+            if (paths.length) importPaths(paths);
+            else
+              setError(
+                "Open a conversation to attach photos, videos or files.",
+              );
+          }
+        }
       }),
     ];
     return () => {
@@ -382,13 +419,16 @@ function App() {
           <div className="local-pill">
             <span /> Local-first. Always yours.
           </div>
-          <button
-            className="account-button"
-            onClick={() => setPage("Settings")}
-          >
-            <span className="avatar">{account?.name?.slice(0, 1) || "P"}</span>
+          <button className="account-button" onClick={() => setPage("Profile")}>
+            <span className="avatar">
+              {orbitProfile?.name?.slice(0, 1) ||
+                account?.name?.slice(0, 1) ||
+                "P"}
+            </span>
             <span>
-              <strong>{account?.name || "Your space"}</strong>
+              <strong>
+                {orbitProfile?.name || account?.name || "Your space"}
+              </strong>
               <small>
                 {account ? "Microsoft connected" : "On this computer"}
               </small>
@@ -396,7 +436,7 @@ function App() {
             <Settings size={15} />
           </button>
           <div className="version">
-            ORBIT LAUNCHER <span>v0.1.0</span>
+            ORBIT LAUNCHER <span>v0.2.0</span>
           </div>
         </div>
       </aside>
@@ -432,6 +472,21 @@ function App() {
           </span>
         </header>
         <main>
+          {(
+            [
+              "Profile",
+              "Connections",
+              "Friends",
+              "Conversations",
+              "Activity",
+            ] as string[]
+          ).includes(page) && (
+            <SocialView
+              page={page}
+              onNavigate={(p) => setPage(p as Page)}
+              onProfileChanged={load}
+            />
+          )}
           {!native && (
             <div className="alert">
               Browser preview · Native integrations are available in the desktop
@@ -568,20 +623,20 @@ function App() {
                   <p>
                     {account
                       ? "Microsoft account connected · Entitlement checked again at launch"
-                      : "Microsoft sign-in requires your own application client ID in Settings."}
+                      : "Connect Microsoft from your Profile. Availability depends on this Orbit release."}
                   </p>
                 </div>
                 <button
                   className="secondary"
                   disabled={!!busy}
                   onClick={() =>
-                    settings.clientId
+                    publisher.microsoft
                       ? perform(
                           "signin",
                           () => api("mc_signin"),
                           "Microsoft account connected",
                         )
-                      : setPage("Settings")
+                      : setPage("Connections")
                   }
                 >
                   {busy === "signin"
@@ -608,16 +663,7 @@ function App() {
             </>
           )}
           {page === "Roblox" && (
-            <RobloxView
-              query={query}
-              onDetails={setDetail}
-              settings={settings}
-              onPublic={() =>
-                perform("public", () =>
-                  api("setting", { key: "robloxPublic", value: true }),
-                )
-              }
-            />
+            <RobloxView query={query} onDetails={setDetail} />
           )}
           {page === "Programs" && (
             <>
@@ -757,72 +803,18 @@ function App() {
                 subtitle="Your preferences stay on this computer."
               />
               <div className="settings-panel">
-                <h2>Microsoft account</h2>
+                <h2>Your connected accounts</h2>
                 <p>
-                  Register your own public desktop application. Never enter a
-                  password, session cookie, or application secret here.
+                  Manage authenticated accounts and profile links in Profile →
+                  Connections. Orbit handles publisher registrations; you never
+                  need to enter developer keys.
                 </p>
-                <label>
-                  Application (client) ID
-                  <input
-                    value={settings.clientId || ""}
-                    placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                    onChange={(e) =>
-                      setSettings((s) => ({ ...s, clientId: e.target.value }))
-                    }
-                  />
-                </label>
-                <div className="button-row">
-                  <button
-                    className="primary"
-                    disabled={!!busy}
-                    onClick={() =>
-                      perform(
-                        "settings",
-                        () =>
-                          api("setting", {
-                            key: "clientId",
-                            value: settings.clientId || "",
-                          }),
-                        "Client ID saved",
-                      )
-                    }
-                  >
-                    Save client ID
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={!!busy || !settings.clientId}
-                    onClick={() =>
-                      perform(
-                        "signin",
-                        () => api("mc_signin"),
-                        "Account connected",
-                      )
-                    }
-                  >
-                    {busy === "signin"
-                      ? "Finish in your browser…"
-                      : "Sign in with Microsoft"}
-                    <ArrowUpRight size={15} />
-                  </button>
-                  {account && (
-                    <button
-                      className="secondary"
-                      onClick={() =>
-                        perform("signout", () => api("mc_signout"))
-                      }
-                    >
-                      Sign out {account.name}
-                    </button>
-                  )}
-                </div>
-                <p className="muted">
-                  Registration: personal Microsoft accounts · Mobile and desktop
-                  application · Redirect URI http://localhost · XboxLive.signin
-                  + offline_access. Minecraft API permission is controlled by
-                  Microsoft. See docs/INTEGRATIONS.md in the source.
-                </p>
+                <button
+                  className="secondary"
+                  onClick={() => setPage("Connections")}
+                >
+                  Manage connections <ArrowUpRight size={15} />
+                </button>
               </div>
               <div className="settings-panel">
                 <h2>After a game starts</h2>
@@ -849,26 +841,16 @@ function App() {
                   Personalized Home feed access is restricted. Public Explore is
                   a separate live catalog.
                 </p>
-                <label className="checkbox">
-                  <input
-                    type="checkbox"
-                    checked={!!settings.robloxPublic}
-                    onChange={(e) =>
-                      perform("settings", () =>
-                        api("setting", {
-                          key: "robloxPublic",
-                          value: e.target.checked,
-                        }),
-                      )
-                    }
-                  />{" "}
-                  Load the public Explore catalog automatically
-                </label>
+                <p>
+                  Public Explore loads automatically. Open official Home in your
+                  browser for its personalized view; Orbit cannot read that
+                  session.
+                </p>
               </div>
               <div className="settings-panel about">
                 <span className="brand-symbol">◒</span>
                 <div>
-                  <h2>Orbit 0.1.0 · Integration preview</h2>
+                  <h2>Orbit 0.2.0 · Social prototype</h2>
                   <p>
                     Rust + Tauri + TypeScript + SQLite. No Orbit account. No
                     hosted backend.
@@ -887,7 +869,7 @@ function App() {
           </span>
           <span>
             {items.length} {items.length === 1 ? "item" : "items"} in your space{" "}
-            <Minus size={12} /> Orbit 0.1.0
+            <Minus size={12} /> Orbit 0.2.0
           </span>
         </footer>
       </div>
@@ -1324,6 +1306,14 @@ function Editor({
                 placeholder="Defaults to the executable’s folder"
                 onChange={(e) => field("workingDir", e.target.value)}
               />
+            </label>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={!!v.gameActivity}
+                onChange={(e) => field("gameActivity", e.target.checked)}
+              />
+              Recognize this program as game activity
             </label>
             <label>
               Cover image

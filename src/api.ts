@@ -19,6 +19,7 @@ export type Item = {
   path?: string;
   args?: string[];
   workingDir?: string;
+  gameActivity?: boolean;
   version?: string;
   loader?: string;
   memory?: number;

@@ -26,6 +26,10 @@ fn allowed(url: &url::Url) -> bool {
             "xboxlive.com",
             "fabricmc.net",
             "modrinth.com",
+            "scdn.co",
+            "spotifycdn.com",
+            "bsky.app",
+            "cdn.discordapp.com",
         ]
         .iter()
         .any(|d| h == *d || h.ends_with(&format!(".{d}")))
@@ -34,7 +38,7 @@ impl Network {
     pub fn new() -> Result<Self> {
         Ok(Self {
             client: reqwest::Client::builder()
-                .user_agent("OrbitLauncher/0.1 (+local desktop client)")
+                .user_agent("OrbitLauncher/0.2 (+local desktop client)")
                 .connect_timeout(Duration::from_secs(20))
                 .timeout(Duration::from_secs(180))
                 .redirect(reqwest::redirect::Policy::custom(|a| {
@@ -231,8 +235,17 @@ pub async fn image(s: &AppState, v: &Value) -> Result<Value> {
     let u = url::Url::parse(raw)?;
     let h = u.host_str().unwrap_or("");
     ensure!(
-        u.scheme() == "https" && (h == "rbxcdn.com" || h.ends_with(".rbxcdn.com")),
-        "Only Roblox CDN images are allowed"
+        u.scheme() == "https"
+            && [
+                "rbxcdn.com",
+                "scdn.co",
+                "spotifycdn.com",
+                "cdn.bsky.app",
+                "cdn.discordapp.com"
+            ]
+            .iter()
+            .any(|d| h == *d || h.ends_with(&format!(".{d}"))),
+        "Only supported provider CDN images are allowed"
     );
     let id = format!("{:x}", Sha1::digest(raw.as_bytes()));
     let path = s.root.join("cache/images").join(format!("{id}.png"));

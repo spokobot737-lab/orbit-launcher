@@ -148,12 +148,17 @@ pub async fn launch(app: Option<&tauri::AppHandle>, s: &AppState, v: &Value) -> 
         let _ = app.emit("process", json!({"id":id,"running":true,"pid":pid}));
     }
     db::record(s, id)?;
+    if item["gameActivity"] == true {
+        crate::activity::game_started(s, &item, pid);
+    }
     let handle = app.cloned();
     let item_id = id.to_owned();
     tauri::async_runtime::spawn(async move {
         let result = child.wait().await;
         use tauri::Emitter;
         if let Some(handle) = handle {
+            use tauri::Manager;
+            crate::activity::game_stopped(&handle.state::<crate::Shared>(), pid);
             let _ = handle.emit(
                 "process",
                 json!({"id":item_id,"running":false,"exitCode":result.ok().and_then(|x|x.code())}),

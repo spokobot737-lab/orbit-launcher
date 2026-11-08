@@ -496,7 +496,7 @@ pub fn launch_command(
             text(installed, "nativeDir")?.to_owned(),
         ),
         ("launcher_name", "Orbit".to_owned()),
-        ("launcher_version", "0.1.0".to_owned()),
+        ("launcher_version", env!("CARGO_PKG_VERSION").to_owned()),
         ("classpath", cp),
         ("classpath_separator", ";".to_owned()),
         (
@@ -618,10 +618,17 @@ async fn spawn(
         });
     }
     db::record(s, text(p, "id")?)?;
+    crate::activity::game_started(
+        s,
+        &json!({"id":p["id"],"name":p["name"],"kind":"minecraft","version":p["version"],"loader":p["loader"]}),
+        pid,
+    );
     let a = app.clone();
     let id = p["id"].clone();
     tauri::async_runtime::spawn(async move {
         let exit = child.wait().await;
+        use tauri::Manager;
+        crate::activity::game_stopped(&a.state::<crate::Shared>(), pid);
         let _ = a.emit(
             "process",
             json!({"id":id,"running":false,"exitCode":exit.ok().and_then(|s|s.code())}),

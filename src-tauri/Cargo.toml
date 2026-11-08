@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 [build-dependencies]
@@ -25,12 +25,39 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 shell-words = "1"
 url = "2"
 anyhow = "1"
+dunce = "1"
 md5 = "0.8"
 regex = "1"
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
+nostr-sdk = { version = "0.44", features = ["nip59"] }
+siwe = "0.6"
+k256 = { version = "0.13", features = ["ecdsa"] }
+sha3 = "0.10"
+hex = "0.4"
+age = "0.12"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+axum = { version = "0.8", features = ["ws"] }
+tokio-util = { version = "0.7", features = ["io", "rt"] }
+mime_guess = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+atrium-oauth = "0.2"
+atrium-api = { version = "0.26", default-features = false, features = ["namespace-appbsky"] }
+atrium-identity = { version = "0.2", features = ["doh-handle-resolver"] }
+atrium-common = "0.1"
+async-trait = "0.1"
+serde_html_form = "0.2"
+windows = { version = "0.62", features = ["Media_Control", "Foundation", "Storage_Streams"] }
 
 [profile.release]
 lto = true
 codegen-units = 1
 strip = true
 opt-level = "s"
+
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false

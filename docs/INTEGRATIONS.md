@@ -12,7 +12,7 @@ A live unauthenticated POST to `https://apis.roblox.com/discovery-api/omni-recom
 
 HTTP status: **401**. A session UUID is an analytics identifier, not authentication. The launcher attempts this Home request automatically when opening Roblox, displays its restriction, and never silently replaces it with popular or hardcoded experiences.
 
-The separate `GET https://apis.roblox.com/explore-api/v1/get-sorts` returned HTTP 200 with actual public sections including Top Trending, Up-and-Coming, Top Playing Now, Fun with Friends and Top Revisited. Their presence and ordering are service-controlled. This is **public Explore**, not the user's personalized Roblox Home page. The user can explicitly opt into it; the preference can then automatically load Explore on later visits. No experience IDs are hardcoded in the shipped catalog.
+The separate `GET https://apis.roblox.com/explore-api/v1/get-sorts` returned HTTP 200 with actual public sections including Top Trending, Up-and-Coming, Top Playing Now, Fun with Friends and Top Revisited. Their presence and ordering are service-controlled. This is **public Explore**, not the user's personalized Roblox Home page. Orbit 0.2 automatically loads this clearly labeled public catalog and displays the personalized Home restriction. An explicit official Home action opens the system browser without reading its session. No experience IDs are hardcoded in the shipped catalog.
 
 The public web discovery/search endpoints are not a stable Open Cloud contract and can change or be restricted. They use the same native HTTP service as other integrations, cache results, and surface failures rather than inventing a replacement catalog.
 
@@ -22,7 +22,7 @@ Other live endpoints:
 - `https://games.roblox.com/v1/games?universeIds=...` for batched details/creators/statistics.
 - `https://thumbnails.roblox.com/v1/games/icons?...` for icons; images downloaded only from HTTPS Roblox CDN hosts.
 
-Roblox documents Home recommendations as personalized. Its documented Open Cloud OAuth identity scopes do not grant access to the website Home recommendation service. OAuth/PKCE is available for documented resources, but signing a user into Open Cloud does not establish a website `.ROBLOSECURITY` session or justify treating that credential as a Home API token. No supported third-party personalized-Home authorization path was established in this investigation. Orbit therefore does **not** offer a misleading Roblox login or ask for cookies. This requested feature remains blocked pending a supported Roblox integration/permission.
+Roblox documents Home recommendations as personalized. Its documented Open Cloud OAuth identity scopes do not grant access to the website Home recommendation service. OAuth/PKCE is available for documented resources, but signing a user into Open Cloud does not establish a website `.ROBLOSECURITY` session or justify treating that credential as a Home API token. No supported third-party personalized-Home authorization path was established in this investigation. Orbit offers documented identity OAuth only in publisher-configured builds and does not claim it authenticates the Home API or ask for cookies. This requested feature remains blocked pending a supported Roblox integration/permission.
 
 Sources:
 
@@ -44,7 +44,7 @@ Rust re-fetches the selected universe's root place, validates a positive numeric
 1. In [Microsoft Entra app registrations](https://entra.microsoft.com/), create an application supporting personal Microsoft accounts (or a supported account type including personal accounts).
 2. Configure **Mobile and desktop applications**, with the system-browser loopback redirect `http://localhost`. Orbit binds an ephemeral port on `127.0.0.1`; Microsoft's native-app localhost port exception supports this pattern.
 3. Use an authorization-code public-client flow with S256 PKCE. Do not create or distribute an application secret. Orbit requests `XboxLive.signin offline_access` on the `consumers` authority.
-4. Copy the **Application (client) ID** into Orbit Settings and save it.
+4. Publisher only: set the public `ORBIT_MICROSOFT_CLIENT_ID` build variable and rebuild. Orbit 0.2 removes developer ID fields from ordinary Settings. See [publisher setup](PUBLISHER_REGISTRATION.md).
 5. Request Minecraft API approval for that exact client ID through [Minecraft's AppID review link](https://aka.ms/mce-reviewappid). At investigation time that link redirected to a Microsoft Forms review form. The browsing tool could not read the form, so its current submission fields, eligibility criteria, cost and approval timing are **not verified**. The old Minecraft help article currently returned a generic help page, not usable registration instructions. Contact Minecraft support if the form is unavailable. Do not assume an Entra scope setting alone grants Minecraft Services access, or that ID@Xbox can approve a Minecraft launcher.
 6. Once permitted, sign in using the system browser with an account owning Java Edition, and test entitlement/profile/refresh behavior. A `403` from Minecraft Services can indicate missing application permission; Xbox authorization can separately fail for account/family/region reasons.
 

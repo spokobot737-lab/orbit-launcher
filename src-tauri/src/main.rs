@@ -1,13 +1,28 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod activity;
 mod auth;
+mod backup;
+mod bluesky;
+mod connections;
 mod db;
+mod identity;
 #[cfg(test)]
 mod live_tests;
+mod media;
 mod minecraft;
 mod mods;
 mod net;
 mod programs;
+mod publisher;
 mod roblox;
+mod secure;
+mod social;
+mod social_commands;
+#[cfg(test)]
+mod social_peer_tests;
+#[cfg(test)]
+mod social_tests;
+mod wallet;
 use serde_json::{json, Value};
 use std::{
     path::PathBuf,
@@ -21,6 +36,8 @@ pub struct AppState {
     pub net: net::Network,
     pub install_lock: tokio::sync::Mutex<()>,
     pub auth_lock: tokio::sync::Mutex<()>,
+    pub social: social::Runtime,
+    pub transfers: media::Transfers,
 }
 pub type Shared = Arc<AppState>;
 pub fn progress(app: &tauri::AppHandle, stage: &str, done: usize, total: usize) {
@@ -59,6 +76,10 @@ async fn api(
             "program_image" => programs::image(&args).await,
             "program_launch" => programs::launch(Some(&app), &s, &args).await,
             "roblox_home" => roblox::home(&s).await,
+            "roblox_official_home" => {
+                open::that_detached("https://www.roblox.com/home")?;
+                Ok(json!({"opened":true,"note":"Official Roblox website in your system browser. Orbit does not read this browser session."}))
+            }
             "roblox_explore" => roblox::explore(&s).await,
             "roblox_search" => roblox::search(&s, &args).await,
             "roblox_details" => roblox::details(&s, &args).await,
@@ -88,6 +109,9 @@ async fn api(
             "mc_account" => auth::account(&s),
             "mc_signout" => auth::signout(&s),
             "logs" => minecraft::logs(&s, &args),
+            _ if op.starts_with("orbit_") => {
+                social_commands::dispatch(&app, s.clone(), &op, args.clone()).await
+            }
             _ => anyhow::bail!("Unknown operation"),
         }
     }
@@ -98,16 +122,43 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            let root = app.path().app_local_data_dir()?;
+            let args: Vec<String> = std::env::args().collect();
+            let root = if let Some(index) = args.iter().position(|a| a == "--data-dir") {
+                let path = PathBuf::from(
+                    args.get(index + 1)
+                        .ok_or("--data-dir needs an absolute directory")?,
+                );
+                if !path.is_absolute() {
+                    return Err("--data-dir needs an absolute directory".into());
+                }
+                path
+            } else {
+                app.path().app_local_data_dir()?
+            };
             std::fs::create_dir_all(&root)?;
+            let root = dunce::canonicalize(root)?;
+            app.asset_protocol_scope()
+                .allow_directory(root.join("cache"), true)?;
             let conn = db::init(&root)?;
-            app.manage(Arc::new(AppState {
+            let state = Arc::new(AppState {
                 root,
                 db: Mutex::new(conn),
                 net: net::Network::new()?,
                 install_lock: tokio::sync::Mutex::new(()),
                 auth_lock: tokio::sync::Mutex::new(()),
-            }));
+                social: social::Runtime::default(),
+                transfers: media::Transfers::new(),
+            });
+            identity::init(&state)?;
+            app.manage(state.clone());
+            let handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if identity::config(&state).is_ok_and(|v| v["enabled"] == true)
+                    && identity::profile(&state).is_ok_and(|v| !v.is_null())
+                {
+                    let _ = social::start(Some(handle), state).await;
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![api])

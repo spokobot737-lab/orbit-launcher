@@ -27,20 +27,16 @@ type Game = {
 export default function RobloxView({
   query,
   onDetails,
-  settings,
-  onPublic,
 }: {
   query: string;
   onDetails: (v: any) => void;
-  settings: any;
-  onPublic: () => void;
 }) {
   const [homeError, setHomeError] = useState(""),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
     [sorts, setSorts] = useState<any[]>([]),
     [stale, setStale] = useState(false),
-    [mode, setMode] = useState(!!settings.robloxPublic),
+    [mode] = useState(true),
     [results, setResults] = useState<Game[]>([]),
     [token, setToken] = useState("");
   const [searched, setSearched] = useState(false);
@@ -138,16 +134,13 @@ export default function RobloxView({
             <strong>Personalized Home is unavailable</strong>
             <p>{homeError}</p>
             <button onClick={home}>Retry Home feed</button>
-            {!mode && (
-              <button
-                onClick={() => {
-                  setMode(true);
-                  onPublic();
-                }}
-              >
-                Browse public Explore instead <ArrowUpRight size={13} />
-              </button>
-            )}
+            <button
+              onClick={() =>
+                api("roblox_official_home").catch((e) => setError(errorText(e)))
+              }
+            >
+              Open official Home in browser <ArrowUpRight size={13} />
+            </button>
           </div>
         </div>
       )}

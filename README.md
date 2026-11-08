@@ -1,26 +1,36 @@
 # Orbit Launcher
 
-A lightweight, local-first Windows launcher built with **Rust, Tauri 2, React/TypeScript, and SQLite**. No Orbit account or hosted backend is required.
+A lightweight, local-first Windows launcher built with **Rust, Tauri 2, React/TypeScript, and SQLite**. No Orbit account or publisher-operated backend is required. Social networking uses explicitly selected third-party relays/storage.
 
 **Status: integration preview, not a feature-complete production release.** Roblox's personalized Home API is restricted, and Microsoft/Minecraft sign-in needs the publisher's own approved application registration. These limitations are visible in the app; no mock catalog or borrowed client ID is shipped.
 
 ## Download
 
-Windows x64 downloads are published under [GitHub Releases](https://github.com/spokobot737-lab/orbit-launcher/releases). Use the `Orbit_0.1.0_x64-setup.exe` installer. A standalone `orbit-launcher.exe` is also provided; it needs Microsoft Edge WebView2 Runtime installed.
+Windows x64 downloads are published under [GitHub Releases](https://github.com/spokobot737-lab/orbit-launcher/releases). Use the `Orbit_0.2.0_x64-setup.exe` installer. A standalone `orbit-launcher.exe` is also provided; it needs Microsoft Edge WebView2 Runtime installed.
 
 The build is unsigned. A production release should be code-signed. Roblox must already be installed and signed in through its official application.
 
 ## Features
 
 - Home with local recent launches and pinned favorites; custom collections and unified library search.
-- Live public Roblox Explore sections, search, experience details, creator/player/visit metadata, locally cached icons, and place-specific runtime dispatch. The app first requests Home and explains access restrictions; Explore is explicitly separate and opt-in.
+- Live public Roblox Explore sections, search, experience details, creator/player/visit metadata, locally cached icons, and place-specific runtime dispatch. The app requests Home and explains access restrictions; Public Explore is automatically loaded and explicitly labeled separately from personalized Home.
 - Direct modern Minecraft Java installation with managed Mojang Java runtimes, assets, libraries, natives, integrity checks, resumed partial downloads, separate profile game folders, and Vanilla/Fabric support.
 - A Fabric performance preset for 1.21.1 with Sodium, Lithium, and FerriteCore, downloaded directly from Modrinth. No proprietary Lunar/Feather assets or code.
-- System-browser Microsoft authorization-code authentication with PKCE, loopback callback/state validation, Xbox/XSTS exchange, Java entitlement/profile checks, and refresh on launch. Requires your own registered and permitted client ID; not yet verified with such an ID.
+- System-browser Microsoft authorization-code authentication with PKCE, loopback callback/state validation, Xbox/XSTS exchange, Java entitlement/profile checks, and refresh on launch. Requires Orbit’s publisher registration and Minecraft permission; not yet verified with an approved ID.
 - Refresh credentials in Windows Credential Manager; access tokens remain in Rust memory. Neither is returned to the frontend or stored in SQLite.
 - Explicit offline identities, independent of Microsoft accounts. Offline mode grants neither ownership nor authenticated multiplayer access.
 - EXE/Windows shortcut import using the file picker or drag-and-drop, Windows shortcut argument parsing, extracted icons, image selection, editable arguments/working directory, and direct process launching.
 - Installation progress, process exit status, bounded launch logs, repair, readable errors, and stay/minimize/exit behavior.
+
+## New in 0.2: social prototype
+
+- Local Orbit profiles, optional separate EVM wallet, peer-verified SIWE, encrypted export/restore and Windows-protected keys.
+- Accepted friendships through signed invitations, real NIP-17 encrypted conversations, durable outbox, receipts, reconnection and blocking.
+- Encrypted attachments, original-quality photos/optional JPEG compression, galleries, GIF/video controls, original downloads, progress/cancel, range-resume, hash checks and cache clearing.
+- Profile → Connections distinguishes authenticated OAuth identities from manual links and unavailable providers. Public publisher configuration replaces developer-ID entry in ordinary settings.
+- Explicit, expiring game/music activity with separate privacy controls, process detection and Windows media-session fallback. Spotify playback requires publisher API access.
+
+**Read [social setup and recovery](docs/SOCIAL_SETUP.md), [publisher registrations](docs/PUBLISHER_REGISTRATION.md), [architecture comparison](docs/SOCIAL_ARCHITECTURE.md), and [social verification](docs/SOCIAL_VERIFICATION.md).** Choose existing relay/storage operators explicitly; this release includes no guaranteed free public messaging or encrypted GB-file service. OAuth provider flows remain unverified without real registrations/user authorization. The prototype is not a production security-audited messenger.
 
 ## Develop on Windows
 
@@ -44,12 +54,12 @@ Build outputs:
 
 ```text
 src-tauri/target/release/orbit-launcher.exe
-src-tauri/target/release/bundle/nsis/Orbit_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Orbit_0.2.0_x64-setup.exe
 ```
 
 ## Minecraft setup
 
-Create a profile under Minecraft, select a version/loader, and save. Choose **Install / Repair**, wait for completion, then **Play**. An owned Java account is required for authenticated play; configure your own Microsoft client ID under Settings. See [external registrations and API limitations](docs/INTEGRATIONS.md).
+Create a profile under Minecraft, select a version/loader, and save. Choose **Install / Repair**, wait for completion, then **Play**. An owned Java account is required for authenticated play; sign-in is enabled only in builds configured with Orbit’s own publisher registration. Users never need developer IDs. See [external registrations and API limitations](docs/INTEGRATIONS.md).
 
 The first validated version is **1.21.1 on Windows x64**. The version picker exposes modern stable releases from Mojang (1.20.5+); other releases are not all tested. Snapshots, legacy versions, ARM64, Forge/NeoForge, custom HUDs, and proprietary mod suites are outside this preview.
 

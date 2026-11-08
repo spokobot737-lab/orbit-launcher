@@ -1514,3 +1514,32 @@ footer svg {
     transition: none !important;
   }
 }
+
+/* Global sidebar layout must load before lazy social views. */
+
+nav {
+  overflow-y: auto;
+  min-height: 0;
+  scrollbar-width: thin;
+}
+.sidebar-bottom {
+  padding-top: 19px;
+  margin-top: 18px;
+}
+.sidebar nav {
+  flex: 1;
+}
+.sidebar .brand {
+  padding-bottom: 25px;
+}
+.sidebar nav button {
+  min-height: 40px;
+  height: 40px;
+  flex-shrink: 0;
+}
+.sidebar .nav-divider {
+  margin: 12px 13px;
+}
+.sidebar .local-pill {
+  margin-bottom: 13px;
+}
