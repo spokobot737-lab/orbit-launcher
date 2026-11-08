@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Orbit",
+  "version": "0.1.0",
+  "identifier": "app.orbit.launcher",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://127.0.0.1:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Orbit",
+        "width": 1280,
+        "height": 840,
+        "minWidth": 860,
+        "minHeight": 620,
+        "backgroundColor": "#101114"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+      "assetProtocol": { "enable": true, "scope": ["$APPLOCALDATA/cache/**"] }
+    }
+  },
+  "bundle": {
+    "useLocalToolsDir": true,
+    "active": true,
+    "targets": ["nsis"],
+    "shortDescription": "A local-first game and application launcher",
+    "category": "Utility",
+    "windows": { "nsis": { "displayLanguageSelector": false } }
+  }
+}

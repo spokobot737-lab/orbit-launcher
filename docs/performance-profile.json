@@ -1,0 +1,10 @@
+{
+  "minecraft": "1.21.1",
+  "fabricLoader": "0.20.1",
+  "verifiedOn": "2026-11-08",
+  "mods": [
+    {"project":"sodium","version":"SMxNOGZ6","displayVersion":"0.8.13+mc1.21.1"},
+    {"project":"lithium","version":"N08Z8wog","displayVersion":"0.15.4+mc1.21.1"},
+    {"project":"ferrite-core","version":"sOzRw3CG","displayVersion":"7.0.3"}
+  ]
+}
