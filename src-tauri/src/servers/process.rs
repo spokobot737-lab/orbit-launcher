@@ -272,8 +272,10 @@ pub fn allowlist_get(s: &AppState, id: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&std::fs::read(file)?)?)
 }
 pub async fn allowlist(s: &AppState, v: &Value) -> Result<Value> {
+    let _life = s.servers.lifecycle.lock().await;
+    let _access = s.servers.access_lock.lock().await;
     let id = v["id"].as_str().context("Choose a server")?;
-    load(s, id)?;
+    let p = load(s, id)?;
     let name = v["name"]
         .as_str()
         .context("Enter a Minecraft account name")?;
@@ -283,13 +285,16 @@ pub async fn allowlist(s: &AppState, v: &Value) -> Result<Value> {
         "Use the Minecraft account's 3–16 character name"
     );
     ensure!(v["approved"]==true,"Host approval is required. An Orbit friendship or claimed username is not proof of account ownership.");
-    let account = s
-        .net
-        .json(&format!(
-            "https://api.mojang.com/users/profiles/minecraft/{name}"
-        ))
-        .await
-        .context("Minecraft account could not be resolved. Check the exact name and retry.")?;
+    let account = if offline(&p) {
+        crate::minecraft::offline_session(name)
+    } else {
+        s.net
+            .json(&format!(
+                "https://api.mojang.com/users/profiles/minecraft/{name}"
+            ))
+            .await
+            .context("Minecraft account could not be resolved. Check the exact name and retry.")?
+    };
     let uuid = uuid::Uuid::parse_str(account["id"].as_str().context("Minecraft UUID missing")?)?;
     let canonical = account["name"].as_str().context("Minecraft name missing")?;
     ensure!(
@@ -308,7 +313,36 @@ pub async fn allowlist(s: &AppState, v: &Value) -> Result<Value> {
         .get(id)
         .cloned()
         .filter(|j| !j.stopped.load(Ordering::Acquire));
-    if let Some(job) = job {
+    if offline(&p) {
+        // Resolve locally, never via Mojang's name cache: even a premium-looking
+        // name has the deterministic OfflinePlayer UUID on an offline server.
+        let _world_lock = if job.is_none() {
+            Some(worlds::host_lock(s, id)?)
+        } else {
+            None
+        };
+        let mut entries = allowlist_get(s, id)?
+            .as_array()
+            .context("Invalid allowlist")?
+            .clone();
+        entries.retain(|x| x["uuid"] != item["uuid"]);
+        if v["remove"] != true {
+            entries.push(item.clone());
+        }
+        std::fs::create_dir_all(root(s, id)?)?;
+        std::fs::write(
+            root(s, id)?.join("whitelist.json"),
+            serde_json::to_vec_pretty(&entries)?,
+        )?;
+        if let Some(job) = job {
+            job.commands.send("whitelist reload".into()).await?;
+            if v["remove"] == true {
+                job.commands
+                    .send(format!("kick {canonical} Access removed by host"))
+                    .await?;
+            }
+        }
+    } else if let Some(job) = job {
         job.commands
             .send(format!(
                 "whitelist {} {canonical}",
@@ -337,6 +371,6 @@ pub async fn allowlist(s: &AppState, v: &Value) -> Result<Value> {
         )?;
     }
     Ok(
-        json!({"account":item,"note":"Approved account entry, not an Orbit ownership proof. Minecraft online-mode verifies the connecting account. Removal kicks that player; removing an Orbit friend alone does not alter this allowlist."}),
+        json!({"account":item,"authMode":auth_mode(&p),"note":if offline(&p){"Exact-case offline nickname approved. This is not identity verification: another client can claim the same name. No operator permission is granted."}else{"Minecraft online-mode verifies the connecting account. Removal kicks that player; an Orbit friendship alone does not grant access."}}),
     )
 }

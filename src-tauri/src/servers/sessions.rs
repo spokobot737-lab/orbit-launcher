@@ -158,10 +158,14 @@ fn card(s: &AppState, p: &Value, job: &Job, online: bool) -> Result<Value> {
     let st = job.status.lock().unwrap().clone();
     let host = identity::keys(s)?.public_key().to_hex();
     Ok(
-        json!({"schema":1,"server":p["id"],"session":st["session"],"host":host,"name":p["name"],"version":p["version"],"loader":p["loader"],"fabricLoader":if p["loader"]=="fabric"{Some(FABRIC)}else{None},"mods":{"scope":"bare","required":[],"serverOnly":[],"optional":[]},"address":st["address"],"online":online,"expires":db::now()+150,"revision":revision(s,p["id"].as_str().unwrap())?,"note":"Minecraft account login and host-approved allowlist entry are required. A shared address is not access permission."}),
+        json!({"schema":1,"server":p["id"],"session":st["session"],"host":host,"name":p["name"],"version":p["version"],"loader":p["loader"],"authMode":auth_mode(p),"fabricLoader":if p["loader"]=="fabric"{Some(FABRIC)}else{None},"mods":{"scope":"bare","required":[],"serverOnly":[],"optional":[]},"address":st["address"],"online":online,"expires":db::now()+150,"revision":revision(s,p["id"].as_str().unwrap())?,"note":"Host allowlist approval required. Offline nicknames are not verified identities. A shared address is not access permission."}),
     )
 }
 pub fn receive(s: &AppState, peer: &str, v: &Value) -> Result<()> {
+    ensure!(
+        v["authMode"].is_null() || matches!(v["authMode"].as_str(), Some("online" | "offline")),
+        "Unsupported server authentication mode"
+    );
     init(s)?;
     ensure!(
         v.to_string().len() < 6000 && v["schema"] == 1 && v["host"] == peer,
@@ -318,7 +322,7 @@ fn target(s: &AppState, v: &Value) -> Result<Value> {
             "Wait for the local server to be ready"
         );
         return Ok(
-            json!({"version":p["version"],"loader":p["loader"],"address":format!("127.0.0.1:{}",p["port"]),"local":true}),
+            json!({"version":p["version"],"loader":p["loader"],"authMode":auth_mode(&p),"address":format!("127.0.0.1:{}",p["port"]),"session":job.status.lock().unwrap()["session"],"local":true}),
         );
     }
     let peer = v["peer"].as_str().context("Choose a friend server")?;
@@ -334,10 +338,14 @@ fn target(s: &AppState, v: &Value) -> Result<Value> {
         .cloned()
         .context("This server invitation expired or the host stopped. Ask for a fresh invitation.")
 }
-fn compatible(s: &AppState, p: &Value) -> bool {
+fn compatible(s: &AppState, p: &Value, target: &Value) -> bool {
     if p["kind"] != "minecraft"
         || p["version"] != VERSION
-        || p["account"] != "microsoft"
+        || if offline(target) {
+            p["account"] != "offline"
+        } else {
+            p["account"] != "microsoft"
+        }
         || p["performance"] == true
     {
         return false;
@@ -357,16 +365,18 @@ pub async fn options(s: &AppState, v: &Value) -> Result<Value> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|p| compatible(s, p))
+        .filter(|p| compatible(s, p, &t))
         .cloned()
         .collect::<Vec<_>>();
     Ok(
-        json!({"target":t,"profiles":profiles,"note":"Only authenticated 1.21.1 Vanilla or bare Fabric profiles without extra mods are offered. Offline profiles cannot join online-mode servers."}),
+        json!({"target":t,"profiles":profiles,"note":if offline(&t){"Nonpremium server: use a local nickname profile. No Microsoft sign-in is needed. The host must approve the exact nickname. Nicknames are not verified identities."}else{"Premium server: use an authenticated 1.21.1 profile. Offline profiles cannot join online-mode servers."}}),
     )
 }
 pub fn create_client(s: &AppState, v: &Value) -> Result<Value> {
-    let _ = target(s, v)?;
-    let p = json!({"id":uuid::Uuid::new_v4().to_string(),"kind":"minecraft","name":"Server play · 1.21.1","version":VERSION,"loader":"vanilla","memory":2048,"width":1280,"height":720,"javaArgs":[],"account":"microsoft","offlineName":"Player","performance":false,"fullscreen":false});
+    let t = target(s, v)?;
+    let nickname = v["nickname"].as_str().unwrap_or("Player");
+    let p = json!({"id":uuid::Uuid::new_v4().to_string(),"kind":"minecraft","name":format!("Server play · {} · 1.21.1",if offline(&t){nickname}else{"premium"}),"version":VERSION,"loader":"vanilla","memory":2048,"width":1280,"height":720,"javaArgs":[],"account":if offline(&t){"offline"}else{"microsoft"},"offlineName":nickname,"performance":false,"fullscreen":false});
+    minecraft::validate_profile(&p)?;
     db::save_item(s, &p)
 }
 pub async fn join(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<Value> {
@@ -378,7 +388,7 @@ pub async fn join(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<Val
             .context("Choose a compatible Minecraft profile")?,
     )?;
     ensure!(
-        compatible(s, &p),
+        compatible(s, &p, &t),
         "This client is not in the supported compatibility scope. Create a clean 1.21.1 profile."
     );
     let address = t["address"].as_str().context("Server address missing")?;
@@ -401,7 +411,11 @@ pub async fn join(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<Val
         ensure!(available>client_memory+1024,"Not enough available RAM for the client alongside the hosted server. Reduce client/server memory or close other apps.");
     }
     if t["local"] == true {
-        let owned = crate::auth::session(s).await?;
+        let owned = if offline(&t) {
+            minecraft::offline_session(p["offlineName"].as_str().context("Enter a nickname")?)
+        } else {
+            crate::auth::session(s).await?
+        };
         let approved = process::allowlist(
             s,
             &json!({"id":v["hostingId"],"name":owned["name"],"approved":true}),
@@ -417,5 +431,17 @@ pub async fn join(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<Val
             "Resolved account differs from authenticated host"
         );
     }
+    let _installation = s.install_lock.try_lock().map_err(|_| {
+        anyhow::anyhow!("Another installation is running. Wait for it to finish and retry Join.")
+    })?;
+    minecraft::install_core(Some(app), s, &p).await?;
+    // A host may have stopped or replaced a shared session during downloads.
+    let latest = target(s, v)?;
+    ensure!(
+        latest["address"] == t["address"]
+            && latest["session"] == t["session"]
+            && auth_mode(&latest) == auth_mode(&t),
+        "Server changed while installing. Check its status and retry Join."
+    );
     minecraft::launch(app, s, &json!({"id":p["id"],"join":address})).await
 }

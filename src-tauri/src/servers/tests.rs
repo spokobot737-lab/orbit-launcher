@@ -60,6 +60,19 @@ async fn encrypted_server_cards_expire_and_reject_wrong_author_or_older_revision
         .unwrap()
         .iter()
         .any(|m| m["id"] == message && m["kind"] == "server_invite"));
+    card["revision"] = json!(3);
+    card["authMode"] = json!("offline");
+    sessions::receive(&b, &aid, &card)?;
+    let options = sessions::options(&b, &target).await?;
+    assert_eq!(options["profiles"].as_array().unwrap().len(), 1);
+    assert_eq!(options["profiles"][0]["account"], "offline");
+    assert_eq!(
+        sessions::create_client(
+            &b,
+            &json!({"peer":aid,"server":card["server"],"nickname":"GuestTwo"})
+        )?["offlineName"],
+        "GuestTwo"
+    );
     card["revision"] = json!(1);
     card["name"] = json!("Stale ignored");
     sessions::receive(&b, &aid, &card)?;
@@ -67,7 +80,7 @@ async fn encrypted_server_cards_expire_and_reject_wrong_author_or_older_revision
     let mut forged = card.clone();
     forged["host"] = json!(bid);
     assert!(sessions::receive(&b, &aid, &forged).is_err());
-    card["revision"] = json!(3);
+    card["revision"] = json!(4);
     card["expires"] = json!(db::now() - 1);
     sessions::receive(&b, &aid, &card)?;
     assert_eq!(sessions::list(&b)?[0]["fresh"], false);
@@ -87,6 +100,124 @@ async fn encrypted_server_cards_expire_and_reject_wrong_author_or_older_revision
 }
 fn config() -> Value {
     json!({"id":"","name":"Synthetic hosted world","version":VERSION,"loader":"vanilla","memory":1024,"players":4,"difficulty":"easy","gameMode":"survival","seed":"test","viewDistance":3,"simulationDistance":3,"port":std::env::var("ORBIT_SERVER_TEST_PORT").ok().and_then(|s|s.parse::<u16>().ok()).unwrap_or(25879),"access":"playit","address":"","acceptEula":true})
+}
+#[tokio::test]
+async fn nonpremium_profiles_allowlist_and_mode_migration() -> Result<()> {
+    let s = crate::social_tests::state(
+        std::env::temp_dir().join(format!("orbit-offline-{}", uuid::Uuid::new_v4())),
+    )?;
+    let mut p = config();
+    p["authMode"] = json!("offline");
+    let p = save(&s, p)?;
+    let id = p["id"].as_str().unwrap();
+    install::write_properties(&s, &p)?;
+    let props = std::fs::read_to_string(root(&s, id)?.join("server.properties"))?;
+    assert!(props.contains("online-mode=false\n"));
+    assert!(props.contains("enforce-secure-profile=false\n"));
+    assert!(props.contains("white-list=true\n"));
+    let a = process::allowlist(&s, &json!({"id":id,"name":"OrbitGuest","approved":true})).await?;
+    assert_eq!(
+        uuid::Uuid::parse_str(a["account"]["uuid"].as_str().unwrap())?,
+        uuid::Uuid::parse_str(
+            crate::minecraft::offline_session("OrbitGuest")["id"]
+                .as_str()
+                .unwrap()
+        )?
+    );
+    assert!(
+        process::allowlist(&s, &json!({"id":id,"name":"Guest\nstop","approved":true}))
+            .await
+            .is_err()
+    );
+    assert!(process::allowlist(&s, &json!({"id":id,"name":"Guest"}))
+        .await
+        .is_err());
+    let mut changed = p.clone();
+    changed["authMode"] = json!("online");
+    assert!(save(&s, changed.clone()).is_err());
+    changed["confirmAuthChange"] = json!(true);
+    let online = save(&s, changed)?;
+    assert!(process::allowlist_get(&s, id)?
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let mut back = online;
+    back["authMode"] = json!("offline");
+    back["confirmAuthChange"] = json!(true);
+    save(&s, back)?;
+    assert_eq!(process::allowlist_get(&s, id)?[0], a["account"]);
+    process::allowlist(
+        &s,
+        &json!({"id":id,"name":"OrbitGuest","approved":true,"remove":true}),
+    )
+    .await?;
+    assert!(process::allowlist_get(&s, id)?
+        .as_array()
+        .unwrap()
+        .is_empty());
+    // Legacy configs retain premium behavior; malformed modes cannot silently disable it.
+    assert!(!offline(&config()));
+    let mut invalid = p.clone();
+    invalid["authMode"] = json!(false);
+    assert!(validate(&invalid).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Real isolated nonpremium server and directly launched Java client; explicit EULA and ORBIT_SERVER_TEST_ROOT required"]
+async fn live_nonpremium_java_client_joins_hosted_server() -> Result<()> {
+    ensure!(
+        std::env::var("ORBIT_SERVER_EULA").as_deref() == Ok("accepted"),
+        "EULA acceptance required"
+    );
+    let base = PathBuf::from(std::env::var("ORBIT_SERVER_TEST_ROOT")?);
+    std::fs::create_dir_all(&base)?;
+    let s = crate::social_tests::state(dunce::canonicalize(base)?)?;
+    let mut p = config();
+    p["authMode"] = json!("offline");
+    p["name"] = json!("Isolated nonpremium verification");
+    let p = save(&s, p)?;
+    let id = p["id"].as_str().unwrap();
+    process::start(None, s.clone(), id).await?;
+    let result=async {
+        let job=s.servers.jobs.lock().unwrap().get(id).unwrap().clone();
+        for _ in 0..240 {if job.status.lock().unwrap()["localReady"]==true{break;}ensure!(!job.stopped.load(std::sync::atomic::Ordering::Acquire),"Test server exited");tokio::time::sleep(std::time::Duration::from_secs(1)).await;}
+        ensure!(job.status.lock().unwrap()["localReady"]==true,"Server never became ready");
+        let target=json!({"hostingId":id,"nickname":"OrbitGuest"});
+        let mut client=sessions::create_client(&s,&target)?;client["memory"]=json!(1024);crate::db::save_item(&s,&client)?;
+        ensure!(client["account"]=="offline","Offline target incorrectly requires Microsoft");
+        let options=sessions::options(&s,&target).await?;ensure!(options["profiles"].as_array().unwrap().iter().any(|x|x["id"]==client["id"]),"Offline client excluded");
+        crate::minecraft::install_core(None,&s,&client).await?;
+        let profile=s.root.join("minecraft/profiles").join(client["id"].as_str().unwrap());
+        let installed:Value=serde_json::from_slice(&std::fs::read(profile.join("installed.json"))?)?;
+        // First try an unapproved name with the real client, then approve the
+        // exact offline UUID and verify real world entry on the second attempt.
+        for approved in [false,true] {
+            if approved { process::allowlist(&s,&json!({"id":id,"name":"OrbitGuest","approved":true})).await?;tokio::time::sleep(std::time::Duration::from_secs(2)).await; }
+            let mut cmd=crate::minecraft::launch_command(&client,&profile,&installed,&crate::minecraft::offline_session("OrbitGuest"))?;
+            let address=if approved && std::env::var("ORBIT_TEST_PUBLIC_JOIN").as_deref()==Ok("1") {
+                for _ in 0..90 {if job.status.lock().unwrap()["tunnelReady"]==true{break;}tokio::time::sleep(std::time::Duration::from_secs(2)).await;}
+                ensure!(job.status.lock().unwrap()["tunnelReady"]==true,"Public tunnel not ready for real Java client");
+                job.status.lock().unwrap()["address"].as_str().context("No public address")?.to_owned()
+            } else {format!("127.0.0.1:{}",p["port"])};
+            cmd.arg("--quickPlayMultiplayer").arg(&address).kill_on_drop(true);
+            let output=std::fs::File::create(s.root.join(if approved{"nonpremium-join.log"}else{"nonpremium-denied.log"}))?;cmd.stdout(output.try_clone()?).stderr(output);
+            let mut child=cmd.spawn()?;
+            let observed=async {
+                for _ in 0..120 {
+                    let lines=job.logs.lock().unwrap().iter().cloned().collect::<Vec<_>>().join("\n");
+                    if approved && lines.contains("OrbitGuest joined the game") { return Ok(()); }
+                    if !approved && (lines.contains("OrbitGuest") && (lines.contains("not white-listed") || lines.contains("not whitelisted"))) { return Ok(()); }
+                    ensure!(child.try_wait()?.is_none(),"Real Java client exited before verification");tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }anyhow::bail!("Client admission result missing; inspect isolated client/server logs")
+            }.await;
+            if child.try_wait()?.is_none(){child.kill().await?;}child.wait().await.ok();observed?;
+            eprintln!("NONPREMIUM_REAL_CLIENT_PASS approved={approved}: direct Minecraft Java1.21.1, no Microsoft session, actual server admission result");
+        }
+        Ok::<_,anyhow::Error>(())
+    }.await;
+    process::stop(None, &s, id, false).await?;
+    result
 }
 #[tokio::test]
 async fn world_import_rejects_active_modded_and_incompatible_sources() -> Result<()> {

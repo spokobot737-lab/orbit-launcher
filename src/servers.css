@@ -333,6 +333,27 @@
   line-height: 1.7;
   font-size: 12px;
 }
+.server-address > span {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.server-address code {
+  overflow-wrap: anywhere;
+}
+.server-address small {
+  color: var(--muted, #a09aaa);
+}
+.server-setup-steps {
+  padding: 16px 20px;
+  border: 1px solid #393044;
+  border-radius: 12px;
+  margin: 16px 0;
+}
+.server-setup-steps p {
+  font-size: 12px;
+  line-height: 1.7;
+}
 .hosting-close .button-row {
   flex-wrap: wrap;
 }

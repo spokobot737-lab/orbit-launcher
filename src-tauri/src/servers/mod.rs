@@ -27,6 +27,8 @@ pub struct Runtime {
     pub claim_cancel: Mutex<Option<CancellationToken>>,
     pub setup_cancel: Mutex<Option<CancellationToken>>,
     pub authorization_lock: tokio::sync::Mutex<()>,
+    pub provision_lock: tokio::sync::Mutex<()>,
+    pub access_lock: tokio::sync::Mutex<()>,
 }
 pub struct Job {
     pub status: Mutex<Value>,
@@ -108,6 +110,10 @@ pub fn log(job: &Job, line: String) {
     lines.push_back(line.chars().take(1500).collect());
 }
 pub fn validate(p: &Value) -> Result<()> {
+    ensure!(
+        p["authMode"].is_null() || matches!(p["authMode"].as_str(), Some("online" | "offline")),
+        "Choose premium or nonpremium authentication"
+    );
     uuid::Uuid::parse_str(p["id"].as_str().context("Missing server ID")?)?;
     ensure!(
         p["name"].as_str().is_some_and(|x| !x.trim().is_empty()
@@ -161,6 +167,17 @@ pub fn validate(p: &Value) -> Result<()> {
     }
     Ok(())
 }
+/// Missing values belong to pre-0.4.1 authenticated servers and invitations.
+pub fn offline(p: &Value) -> bool {
+    p["authMode"] == "offline"
+}
+pub fn auth_mode(p: &Value) -> &'static str {
+    if offline(p) {
+        "offline"
+    } else {
+        "online"
+    }
+}
 pub fn save(s: &AppState, mut p: Value) -> Result<Value> {
     init(s)?;
     if p["id"].as_str().unwrap_or("").is_empty() {
@@ -181,6 +198,24 @@ pub fn save(s: &AppState, mut p: Value) -> Result<Value> {
     if let Ok(old) = load(s, &id) {
         ensure!(old["version"]==p["version"]&&old["loader"]==p["loader"],"Changing version or loader is not supported. Create a separate server; never downgrade a world.");
         p["eulaAcceptedAt"] = old["eulaAcceptedAt"].clone();
+        if offline(&old) != offline(&p) {
+            ensure!(p["confirmAuthChange"] == true, "Confirm authentication change: player UUIDs, inventories and permissions differ. Mode-specific allowlists are preserved; no player data is converted.");
+            let folder = root(s, &id)?;
+            let current = folder.join("whitelist.json");
+            if current.exists() {
+                std::fs::copy(
+                    &current,
+                    folder.join(format!("whitelist-{}.json", auth_mode(&old))),
+                )?;
+            }
+            let restore = folder.join(format!("whitelist-{}.json", auth_mode(&p)));
+            let bytes = if restore.exists() {
+                std::fs::read(restore)?
+            } else {
+                b"[]".to_vec()
+            };
+            std::fs::write(current, bytes)?;
+        }
     } else {
         p["eulaAcceptedAt"] = Value::Null;
     }
@@ -188,6 +223,8 @@ pub fn save(s: &AppState, mut p: Value) -> Result<Value> {
         p["eulaAcceptedAt"] = json!(db::now());
     }
     p.as_object_mut().unwrap().remove("acceptEula");
+    p.as_object_mut().unwrap().remove("confirmAuthChange");
+    p["authMode"] = json!(auth_mode(&p));
     s.db.lock().unwrap().execute(
         "INSERT OR REPLACE INTO hosted_servers VALUES(?,?)",
         rusqlite::params![id, p.to_string()],
@@ -227,7 +264,11 @@ pub async fn dispatch(
             "../../../docs/third-party/PLAYIT-LICENSE.txt"
         ))),
         "server_list" => list(&s),
-        "server_save" => save(&s, v),
+        "server_save" => {
+            let _life = s.servers.lifecycle.lock().await;
+            let _access = s.servers.access_lock.lock().await;
+            save(&s, v)
+        }
         "server_start" => process::start(app, s, id).await,
         "server_stop" => {
             process::stop(app.as_ref(), &s, id, false).await?;
@@ -290,6 +331,7 @@ pub async fn dispatch(
         }
         "server_create_client" => sessions::create_client(&s, &v),
         "server_tunnel_setup" => tunnel::claim(app, s).await,
+        "server_tunnel_configure" => tunnel::configure(app, s, id).await,
         "server_tunnel_status" => Ok(tunnel::status(&s)),
         "server_tunnel_reset" => {
             ensure!(

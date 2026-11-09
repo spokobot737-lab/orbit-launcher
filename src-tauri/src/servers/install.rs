@@ -137,7 +137,8 @@ pub fn write_properties(s: &AppState, p: &Value) -> Result<()> {
     } else {
         "0.0.0.0"
     };
-    let text=format!("# Managed by Orbit. Settings are edited while stopped.\nserver-ip={bind}\nserver-port={}\nonline-mode=true\nwhite-list=true\nenforce-whitelist=true\nop-permission-level=1\nenable-rcon=false\nenable-query=false\nenable-jmx-monitoring=false\nlevel-name=world\nmax-players={}\ndifficulty={}\ngamemode={}\nlevel-seed={}\nview-distance={}\nsimulation-distance={}\nmotd=Orbit private server\nspawn-protection=16\n",p["port"],p["players"],p["difficulty"].as_str().unwrap(),p["gameMode"].as_str().unwrap(),p["seed"].as_str().unwrap(),p["viewDistance"],p["simulationDistance"]);
+    let authenticated = !offline(p);
+    let text=format!("# Managed by Orbit. Settings are edited while stopped.\nserver-ip={bind}\nserver-port={}\nonline-mode={authenticated}\nenforce-secure-profile={authenticated}\nwhite-list=true\nenforce-whitelist=true\nop-permission-level=1\nenable-rcon=false\nenable-query=false\nenable-jmx-monitoring=false\nlevel-name=world\nmax-players={}\ndifficulty={}\ngamemode={}\nlevel-seed={}\nview-distance={}\nsimulation-distance={}\nmotd=Orbit private server\nspawn-protection=16\n",p["port"],p["players"],p["difficulty"].as_str().unwrap(),p["gameMode"].as_str().unwrap(),p["seed"].as_str().unwrap(),p["viewDistance"],p["simulationDistance"]);
     std::fs::create_dir_all(&folder)?;
     std::fs::write(folder.join("server.properties"), text)?;
     Ok(())

@@ -435,7 +435,7 @@ function App() {
             </span>
           </button>
           <div className="version">
-            ORBIT LAUNCHER <span>v0.4.0</span>
+            ORBIT LAUNCHER <span>v0.4.1</span>
           </div>
         </div>
       </aside>
@@ -872,7 +872,7 @@ function App() {
               <div className="settings-panel about">
                 <span className="brand-symbol">◒</span>
                 <div>
-                  <h2>Orbit 0.4.0 · Social prototype</h2>
+                  <h2>Orbit 0.4.1 · Social prototype</h2>
                   <p>
                     Rust + Tauri + TypeScript + SQLite. No Orbit account. No
                     hosted backend.
@@ -903,7 +903,7 @@ function App() {
           </span>
           <span>
             {items.length} {items.length === 1 ? "item" : "items"} in your space{" "}
-            <Minus size={12} /> Orbit 0.4.0
+            <Minus size={12} /> Orbit 0.4.1
           </span>
         </footer>
       </div>

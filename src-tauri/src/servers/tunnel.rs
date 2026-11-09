@@ -104,6 +104,25 @@ pub(super) async fn claim_resume(
 }
 fn start_setup(app: Option<tauri::AppHandle>, s: Shared) {
     if active(&s) {
+        // Authorization can finish after Java is already ready. Resume that
+        // installation's real job, not an isolated setup-only agent.
+        let jobs = s
+            .servers
+            .jobs
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(_, j)| {
+                j.status.lock().unwrap()["localReady"] == true
+                    && !j.stopped.load(std::sync::atomic::Ordering::Acquire)
+            })
+            .map(|(id, j)| (id.clone(), j.clone()))
+            .collect::<Vec<_>>();
+        for (id, job) in jobs {
+            if let Ok(p) = load(&s, &id) {
+                tokio::spawn(run(app.clone(), s.clone(), p, job));
+            }
+        }
         return;
     }
     let cancel = CancellationToken::new();
@@ -132,6 +151,147 @@ fn start_setup(app: Option<tauri::AppHandle>, s: Shared) {
             signal(app.as_ref());
         }
     });
+}
+/// The self-managed agent may create a free tunnel only for itself. No account
+/// API key, web session, region upgrade or paid fallback is requested.
+pub async fn configure(app: Option<tauri::AppHandle>, s: Shared, id: &str) -> Result<Value> {
+    let p = load(&s, id)?;
+    ensure!(
+        p["access"] == "playit",
+        "Choose playit access for this server first"
+    );
+    let secret = secure::get(&s, "playit-host")
+        .context("Authorize this installation with Set up online access first")?;
+    let api = PlayitApi::create(API.into(), Some(secret));
+    provision(&s, &api, p["port"].as_u64().unwrap() as u16).await?;
+    start_setup(app, s);
+    Ok(
+        json!({"note":"Free Minecraft Java tunnel requested or reused. Allocation may take a moment; the address appears after the provider allocates it."}),
+    )
+}
+fn free_request(agent: uuid::Uuid, port: u16) -> ReqTunnelsCreate {
+    ReqTunnelsCreate {
+        name: Some(format!("Orbit Minecraft {port}")),
+        tunnel_type: Some(TunnelType::MinecraftJava),
+        port_type: PortType::Tcp,
+        port_count: 1,
+        origin: TunnelOriginCreate::Agent(AssignedAgentCreate {
+            agent_id: agent,
+            local_ip: std::net::Ipv4Addr::LOCALHOST.into(),
+            local_port: Some(port),
+        }),
+        enabled: true,
+        alloc: Some(TunnelCreateUseAllocation::Region(UseRegion {
+            region: PlayitNetwork::Global,
+        })),
+        firewall_id: None,
+        proxy_protocol: None,
+    }
+}
+async fn provision(s: &AppState, api: &PlayitApi, port: u16) -> Result<()> {
+    let _guard = s.servers.provision_lock.lock().await;
+    let data = tokio::time::timeout(Duration::from_secs(15), api.v1_agents_rundata())
+        .await
+        .context("Playit configuration timed out")?
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "Playit could not read this host. Check authorization and account verification."
+            )
+        })?;
+    if data.tunnels.iter().any(|t| selected(t, port).is_some())
+        || data
+            .pending
+            .iter()
+            .any(|t| t.name == format!("Orbit Minecraft {port}"))
+    {
+        return Ok(());
+    }
+    ensure!(data.permissions.account_status == AccountStatus::Verified,"Playit requires a verified account. Complete email verification in its dashboard, then retry. No paid plan is needed for the requested Minecraft Java tunnel.");
+    let key = format!("playitProvision:{}:{port}", data.agent_id);
+    let previous = db::setting(s, &key)
+        .ok()
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    ensure!(db::now()-previous >= 300,"A tunnel allocation was recently requested. Wait up to five minutes and check the playit dashboard before retrying; this avoids duplicate allocations after an uncertain response.");
+    s.db.lock().unwrap().execute(
+        "INSERT OR REPLACE INTO settings VALUES(?,?)",
+        rusqlite::params![key, db::now().to_string()],
+    )?;
+    match tokio::time::timeout(Duration::from_secs(20),api.tunnels_create(free_request(data.agent_id,port))).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(ApiError::Fail(reason))) => { s.db.lock().unwrap().execute("DELETE FROM settings WHERE key=?",[key])?; anyhow::bail!("Playit refused the free Minecraft Java tunnel: {reason}. Check account limits in the dashboard; Orbit will not purchase or upgrade anything."); },
+        Ok(Err(ApiError::ApiError(ApiResponseError::Auth(reason)))) => anyhow::bail!("Playit tunnel creation permission: {reason:?}. Create a free Minecraft Java tunnel manually for this agent to 127.0.0.1:{port}, Proxy Protocol off, then reconnect."),
+        _ => anyhow::bail!("Playit tunnel creation response was not confirmed. Check the dashboard before retrying in five minutes; no duplicate request was sent."),
+    }
+}
+#[cfg(test)]
+mod verification {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "Creates and deletes only one isolated free playit test tunnel using the explicitly authorized test host"]
+    async fn live_free_self_managed_tunnel_creation() -> Result<()> {
+        let root = PathBuf::from(std::env::var("ORBIT_SERVER_TEST_ROOT")?);
+        let s = crate::social_tests::state(dunce::canonicalize(root)?)?;
+        let secret = secure::get(&s, "playit-host")?;
+        let api = PlayitApi::create(API.into(), Some(secret));
+        let data = api
+            .v1_agents_rundata()
+            .await
+            .map_err(|_| anyhow::anyhow!("Read authorized test agent failed"))?;
+        let created = api
+            .tunnels_create(free_request(data.agent_id, 25881))
+            .await
+            .map_err(|error| match error {
+                ApiError::Fail(v) => anyhow::anyhow!("Free tunnel creation refused: {v}"),
+                ApiError::ApiError(ApiResponseError::Auth(v)) => {
+                    anyhow::anyhow!("Free tunnel creation authorization: {v:?}")
+                }
+                ApiError::ApiError(v) => anyhow::anyhow!("Free tunnel provider validation: {v:?}"),
+                ApiError::ClientError(
+                    playit_api_client::http_client::HttpClientError::ParseError(_, status, body),
+                ) => {
+                    let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    let code = v["data"]
+                        .as_str()
+                        .filter(|x| {
+                            x.len() < 100
+                                && x.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        })
+                        .unwrap_or("unrecognized-schema");
+                    anyhow::anyhow!(
+                        "Free tunnel creation HTTP {status}; provider code {code}; data keys {:?}",
+                        v["data"].as_object().map(|o| o.keys().collect::<Vec<_>>())
+                    )
+                }
+                _ => anyhow::anyhow!("Free tunnel creation failed; response unconfirmed"),
+            })?;
+        let checked = async {
+            for _ in 0..30 {
+                let data = api
+                    .v1_agents_rundata()
+                    .await
+                    .map_err(|_| anyhow::anyhow!("Agent config failed"))?;
+                if let Some(t) = data.tunnels.iter().find(|t| t.id == created.id) {
+                    ensure!(
+                        selected(t, 25881).is_some(),
+                        "Provider tunnel does not match exact restricted origin"
+                    );
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            anyhow::bail!("Free tunnel allocation did not finish")
+        }
+        .await;
+        api.tunnels_delete(ReqTunnelsDelete {
+            tunnel_id: created.id,
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("Isolated test tunnel cleanup failed"))?;
+        checked?;
+        eprintln!("PLAYIT_FREE_PROVISION_PASS: self-managed Agent-Key created a free global MinecraftJava tunnel, exact origin25881 verified, only that test tunnel deleted");
+        Ok(())
+    }
 }
 struct CancelOnDrop(CancellationToken);
 impl Drop for CancelOnDrop {
@@ -195,6 +355,13 @@ async fn playit(
     let secret=secure::get(s,"playit-host").context("Authorize this host in your browser using Set up online access. No developer API key is needed.")?;
     let api = PlayitApi::create(API.into(), Some(secret.clone()));
     let port = p["port"].as_u64().unwrap() as u16;
+    job.status.lock().unwrap()["setupError"] = match provision(s, &api, port).await {
+        Ok(()) => Value::Null,
+        Err(e) => {
+            log(job, format!("Tunnel setup: {e}"));
+            json!(e.to_string())
+        }
+    };
     for attempt in 0..5 {
         update(
             app,

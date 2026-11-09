@@ -24,6 +24,7 @@ const fresh = (memory = 2048) => ({
   name: "My private world",
   version: "1.21.1",
   loader: "vanilla",
+  authMode: "offline",
   memory,
   players: 6,
   difficulty: "normal",
@@ -52,9 +53,15 @@ export function ServerJoin({
   onCreated?: () => void;
 }) {
   const [data, setData] = useState<any>(null),
+    [nickname, setNickname] = useState("Player"),
     [profile, setProfile] = useState(""),
     [busy, setBusy] = useState(""),
     [error, setError] = useState("");
+  useEffect(() => {
+    setData(null);
+    setProfile("");
+    setError("");
+  }, [target.hostingId, target.peer, target.server]);
   async function options() {
     setBusy("check");
     setError("");
@@ -105,6 +112,21 @@ export function ServerJoin({
               </select>
             </label>
           )}
+          {data.target.authMode === "offline" && (
+            <label>
+              Nickname for a new nonpremium profile
+              <input
+                value={nickname}
+                maxLength={16}
+                pattern="[A-Za-z0-9_]{3,16}"
+                onChange={(e) => setNickname(e.target.value)}
+              />
+              <small>
+                Use the exact spelling approved by the host. Existing profiles
+                keep their own nickname.
+              </small>
+            </label>
+          )}
           <div className="button-row">
             {profile && (
               <>
@@ -121,7 +143,9 @@ export function ServerJoin({
                   onClick={() => action("server_join", { ...target, profile })}
                 >
                   <Play size={14} />
-                  {busy === "server_join" ? "Launching…" : "Launch and connect"}
+                  {busy === "server_join"
+                    ? "Installing / launching…"
+                    : "Install, launch and connect"}
                 </button>
               </>
             )}
@@ -131,7 +155,10 @@ export function ServerJoin({
               onClick={async () => {
                 setBusy("create");
                 try {
-                  const p = await api("server_create_client", target);
+                  const p = await api("server_create_client", {
+                    ...target,
+                    nickname,
+                  });
                   await options();
                   setProfile(p.id);
                   onCreated?.();
@@ -149,9 +176,9 @@ export function ServerJoin({
             </button>
           </div>
           <small>
-            Microsoft sign-in and game ownership are required. Playing on your
-            own server approves your authenticated account. Friends need
-            separate host allowlist approval.
+            {data.target.authMode === "offline"
+              ? "Nonpremium: no Microsoft sign-in. Host Play approves the selected profile's nickname locally. Friends need host approval. Offline mode does not grant game ownership or access to authenticated servers."
+              : "Premium: Microsoft sign-in and game ownership are required. Host Play approves your authenticated account. Friends need host allowlist approval."}
           </small>
         </>
       )}
@@ -212,8 +239,10 @@ export function ServerInvitationCard({
         {fresh ? "Recently announced · check on Join" : "Expired / offline"}
       </span>
       <p className="muted">
-        Minecraft authentication and host allowlist approval are required. This
-        card does not prove the host is still online.
+        {latest.authMode === "offline"
+          ? "Nonpremium · nickname allowlist; identity is not verified."
+          : "Premium · Minecraft authentication and host approval required."}{" "}
+        This card does not prove the host is still online.
       </p>
       {(fresh || outgoing) && (
         <ServerJoin
@@ -280,6 +309,9 @@ export default function Servers({
     };
   }, [load]);
   const current = servers.find((s) => s.id === selected);
+  useEffect(() => {
+    if (!selected && servers.length) setSelected(servers[0].id);
+  }, [servers, selected]);
   const detail = useCallback(async () => {
     if (!selected) return;
     if (tab === "logs") setLogs(await api("server_logs", { id: selected }));
@@ -350,12 +382,15 @@ export default function Servers({
           <h3>Online access · playit.gg</h3>
           <p>
             {tunnel.authorized
-              ? "Host authorized. Configure a free Minecraft Java tunnel once in the dashboard."
-              : "Authorize this host in your browser, then configure one free Minecraft Java tunnel. Joining players need no agent."}
+              ? "This installation is authorized. Hosting requests or reuses a free Minecraft Java tunnel automatically."
+              : "One-time setup on each host PC: authorize Orbit with your own verified playit account in the browser. Orbit then requests the free Minecraft Java tunnel. Joining players need no agent or playit account."}
           </p>
           <small>
-            Origin: 127.0.0.1 and your server port (default 25565). No router
-            changes. Availability and latency depend on playit and your network.
+            {current
+              ? `Tunnel origin for ${current.name}: 127.0.0.1:${current.port}. `
+              : "Default origin: 127.0.0.1:25565. "}
+            No router changes or paid plan. Availability and latency depend on
+            playit and your network.
           </small>
           {tunnel.phase && <p>{tunnel.phase}</p>}
           {tunnel.error && <p className="error">{tunnel.error}</p>}
@@ -368,13 +403,28 @@ export default function Servers({
               act(
                 "server_tunnel_setup",
                 {},
-                "Complete the playit authorization in your browser. Then create the Minecraft Java tunnel for this Orbit agent.",
+                "Authorize this installation in your browser. If already hosting, Orbit resumes online setup automatically after approval.",
               )
             }
           >
             {tunnel.authorized ? "Check authorization" : "Set up online access"}
             <ArrowUpRight size={14} />
           </button>
+          {tunnel.authorized && current && (
+            <button
+              className="secondary"
+              disabled={!!busy}
+              onClick={() =>
+                act(
+                  "server_tunnel_configure",
+                  { id: current.id },
+                  "Free tunnel requested or reused. Wait for allocation; do not buy a plan.",
+                )
+              }
+            >
+              Configure free tunnel
+            </button>
+          )}
           <button
             className="text-button"
             onClick={() => act("server_tunnel_dashboard")}
@@ -475,7 +525,13 @@ export default function Servers({
               <button
                 disabled={!!busy || active(current)}
                 className="primary"
-                onClick={() => act("server_start", { id: selected })}
+                onClick={() =>
+                  run("host", async () => {
+                    await api("server_start", { id: selected });
+                    if (current.access === "playit" && !tunnel.authorized)
+                      await api("server_tunnel_setup");
+                  }).catch(() => {})
+                }
               >
                 <Play size={14} />
                 Host server
@@ -556,9 +612,42 @@ export default function Servers({
                   Resident memory · {current.memory} MiB maximum heap
                 </span>
               </div>
+              <div className="server-address">
+                <span>
+                  <small>This PC · Minecraft Java {current.version}</small>
+                  <code>127.0.0.1:{current.port}</code>
+                </span>
+                <button
+                  className="secondary"
+                  onClick={() =>
+                    navigator.clipboard
+                      .writeText(`127.0.0.1:${current.port}`)
+                      .catch((e) => setError(errorText(e)))
+                  }
+                >
+                  <Copy size={14} />
+                  Copy local address
+                </button>
+              </div>
+              <p className="muted">
+                {current.authMode === "offline"
+                  ? "Nonpremium · nicknames are not verified. Add the exact player nickname in Allowlist before joining."
+                  : "Premium · authenticated Minecraft accounts only."}{" "}
+                You can also use your existing launcher: start Java{" "}
+                {current.version}, Multiplayer → Direct Connection, and paste
+                the address.
+              </p>
               {current.runtime.address && (
                 <div className="server-address">
-                  <code>{current.runtime.address}</code>
+                  <span>
+                    <small>
+                      Internet · for friends{" "}
+                      {current.runtime.tunnelReady
+                        ? "· responding from this PC"
+                        : "· not ready yet"}
+                    </small>
+                    <code>{current.runtime.address}</code>
+                  </span>
                   <button
                     className="secondary"
                     onClick={() =>
@@ -571,6 +660,29 @@ export default function Servers({
                     Copy address
                   </button>
                 </div>
+              )}
+              {!current.runtime.address && (
+                <div className="server-setup-steps">
+                  <strong>Internet address pending</strong>
+                  <p>
+                    {!tunnel.authorized
+                      ? "1. Set up online access above and approve this host in your browser."
+                      : "1. Host server, then wait for automatic free tunnel allocation. Use Configure free tunnel to retry."}
+                  </p>
+                  <p>
+                    2. If playit requires email verification or refuses
+                    allocation, finish setup in its dashboard. Choose Minecraft
+                    Java / Free Network and use the origin shown above, with
+                    Proxy Protocol disabled.
+                  </p>
+                  <p>
+                    3. When the public address appears here, copy it for your
+                    friends and approve their nicknames in Allowlist.
+                  </p>
+                </div>
+              )}
+              {current.runtime.setupError && (
+                <p className="alert error">{current.runtime.setupError}</p>
               )}
               <p>
                 {current.runtime.accessNote ||
@@ -621,9 +733,10 @@ export default function Servers({
             <>
               <h3>Invite accepted friends</h3>
               <p>
-                This sends an encrypted server card, not gameplay traffic. The
-                friend must use an authenticated Minecraft account that you
-                approve separately.
+                This sends an encrypted server card.{" "}
+                {current.authMode === "offline"
+                  ? "Approve your friend's exact nickname in Allowlist. Nonpremium nicknames are not verified identities."
+                  : "Approve your friend's authenticated Minecraft account separately."}
               </p>
               {friends.length === 0 ? (
                 <p>Add an accepted friend under Conversations first.</p>
@@ -674,14 +787,14 @@ export default function Servers({
                 Private access
               </h3>
               <p>
-                Authentication and allowlist enforcement are always enabled.
-                Resolve an intended Minecraft account by name, then explicitly
-                approve it. A self-asserted name is not proof that an Orbit
-                friend owns that account; Minecraft verifies ownership when they
-                log in. No operator permissions are granted.
+                {current.authMode === "offline"
+                  ? "Nonpremium: add the exact nickname, including upper/lower case. No Microsoft account or Mojang lookup is required. The allowlist limits names, but anyone who claims an approved name can impersonate that player. No operator permissions are granted."
+                  : "Premium: resolve and approve an authenticated Minecraft account. Minecraft verifies ownership when the player logs in. No operator permissions are granted."}
               </p>
               <label>
-                Minecraft account name
+                {current.authMode === "offline"
+                  ? "Exact player nickname"
+                  : "Minecraft account name"}
                 <input
                   value={player}
                   maxLength={16}
@@ -703,11 +816,13 @@ export default function Servers({
                   act(
                     "server_allowlist",
                     { id: selected, name: player, approved: true },
-                    "Account resolved and allowlist approval queued. Running servers apply it through their console; check logs.",
+                    "Player approval saved or queued. Check server logs before joining.",
                   )
                 }
               >
-                Resolve and approve account
+                {current.authMode === "offline"
+                  ? "Approve nickname"
+                  : "Resolve and approve account"}
               </button>
               {allowlist.map((p) => (
                 <div className="server-list-row" key={p.uuid}>
@@ -893,8 +1008,11 @@ export default function Servers({
                   : "Expired / offline"}
               </span>
               <small>
-                No required mods · authenticated Minecraft account and host
-                allowlist approval required.
+                No required mods ·{" "}
+                {c.authMode === "offline"
+                  ? "nonpremium nickname"
+                  : "premium account"}{" "}
+                · host allowlist approval required.
               </small>
               {c.online && c.expires * 1000 > now && (
                 <ServerJoin
@@ -912,6 +1030,19 @@ export default function Servers({
             className="modal server-editor"
             onSubmit={async (e) => {
               e.preventDefault();
+              if (
+                edit.id &&
+                (current?.authMode || "online") !== (edit.authMode || "online")
+              ) {
+                if (
+                  !(await confirm(
+                    "Changing premium/nonpremium mode changes player UUIDs. Inventories, pets and permissions may appear different. Each mode keeps its own allowlist; no player data is converted. Back up the world first.",
+                    { title: "Change player identity mode?", kind: "warning" },
+                  ))
+                )
+                  return;
+                edit.confirmAuthChange = true;
+              }
               try {
                 const saved = await run(
                   "save",
@@ -973,6 +1104,18 @@ export default function Servers({
                 >
                   <option value="vanilla">Vanilla</option>
                   <option value="fabric">Fabric 0.16.14 · no mods</option>
+                </select>
+              </label>
+              <label>
+                Player authentication
+                <select
+                  value={edit.authMode || "online"}
+                  onChange={(e) =>
+                    setEdit({ ...edit, authMode: e.target.value })
+                  }
+                >
+                  <option value="offline">Nonpremium · local nicknames</option>
+                  <option value="online">Premium · Microsoft accounts</option>
                 </select>
               </label>
               <label>
@@ -1061,6 +1204,14 @@ export default function Servers({
                 />
               </label>
             </div>
+            {edit.authMode === "offline" && (
+              <p className="alert">
+                Nonpremium mode accepts local nickname profiles without
+                Microsoft sign-in. Nicknames can be impersonated; the allowlist
+                is not identity verification. Game ownership and authenticated
+                Minecraft services remain separate.
+              </p>
+            )}
             <p className="muted">
               {memory.note} Player slots are a configuration limit, not a
               capacity guarantee. Only this version and bare loaders are

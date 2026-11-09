@@ -461,8 +461,8 @@ pub async fn launch(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<V
     let mut command = launch_command(&p, &root, &installed, &session)?;
     if let Some(address) = v["join"].as_str() {
         ensure!(
-            p["account"] == "microsoft" && p["version"] == crate::servers::VERSION,
-            "Server Quick Play requires an authenticated supported profile"
+            p["version"] == crate::servers::VERSION,
+            "Server Quick Play requires a supported profile"
         );
         crate::servers::sessions::address(address)?;
         command.arg("--quickPlayMultiplayer").arg(address);

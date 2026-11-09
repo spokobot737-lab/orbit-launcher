@@ -1,4 +1,28 @@
-# Orbit 0.4 hosting verification
+# Minecraft hosting verification
+
+## Orbit 0.4.1 verification - 2026-11-08
+
+- Native suite: **18 passed, 0 failed, 10 opt-in checks ignored**. The new check covers nonpremium properties, deterministic exact-case nickname UUIDs without Mojang lookup, approval/removal, malformed-mode rejection, confirmation and separate allowlist preservation when switching modes. Encrypted-card tests now check nonpremium client filtering/creation and legacy premium behavior.
+- Real Minecraft Java **1.21.1 client and dedicated server**, managed Java 21, no Microsoft session: unapproved `OrbitGuest` was refused, then the approved offline UUID entered the world. The first local lifecycle passed in about 224 seconds including fresh client downloads. Client/server were stopped and all dimensions saved.
+- A second real-client run passed in about **66 seconds** with the approved client connecting through the public playit hostname. The client's own log confirms the playit destination and the server logs actual world entry. This is gameplay admission through the tunnel **from the host PC**, not an independent-network player test. Both processes were stopped afterward.
+- Real free allocation: the self-managed Agent-Key created a **global Minecraft Java tunnel** with loopback origin port 25881; the returned tunnel matched the restricted selector. Only that newly created test tunnel was deleted afterward. This passed in about 8 seconds. The newer official SDK `/v1/tunnels/create` schema was rejected with a parse-body validation error; production uses the working official `/tunnels/create` method.
+- Source includes pending-allocation reuse, serialized creation and a five-minute cooldown after unconfirmed responses; no purchase/premium allocation or account API key is requested. Provider quotas, verification requirements, rate limits and outages remain external limits.
+- Normal installations need their own one-time browser authorization; the isolated test credential is not copied into user data. No existing user world, account, server authentication setting or installed executable was silently changed by these tests.
+- Not verified: two simultaneous real players, a second machine/network, every provider failure/quota scenario, authenticated Premium client entry or a complete installer/interactive UI matrix. Nonpremium nickname impersonation remains inherent to unauthenticated Vanilla; an allowlist does not verify identity. Modpacks and custom game authentication plugins are outside this release.
+
+Reproduce the additional checks in an explicitly authorized isolated test installation:
+
+```powershell
+$env:ORBIT_SERVER_EULA = 'accepted'
+$env:ORBIT_SERVER_TEST_ROOT = "$PWD\.verification\hosting"
+cargo test --manifest-path src-tauri/Cargo.toml live_nonpremium_java_client_joins_hosted_server -- --ignored --nocapture
+# With an already-authorized test playit agent and a matching tunnel:
+$env:ORBIT_TEST_PUBLIC_JOIN = '1'
+cargo test --manifest-path src-tauri/Cargo.toml live_nonpremium_java_client_joins_hosted_server -- --ignored --nocapture
+cargo test --manifest-path src-tauri/Cargo.toml live_free_self_managed_tunnel_creation -- --ignored --nocapture
+```
+
+## Historical 0.4.0 verification
 
 2026-11-08, Windows x64, Rust MSVC, Node 24. All worlds/files were synthetic and isolated under ignored verification directories. The user explicitly accepted Minecraft EULA for the tests and authorized use of their playit account for browser setup. No private world, Minecraft account, wallet, paid plan or remote game server was used or provisioned.
 
