@@ -67,7 +67,7 @@ fn friend_profile(s: &AppState) -> Result<Value> {
     }
     Ok(p)
 }
-fn relays(v: &Value) -> Result<Vec<String>> {
+pub(crate) fn relays(v: &Value) -> Result<Vec<String>> {
     let a = v.as_array().context("Inbox relays missing")?;
     ensure!(
         !a.is_empty() && a.len() <= 3,
@@ -332,6 +332,19 @@ pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
             None,
         )
         .await?;
+    let voice_since = db::now();
+    client
+        .subscribe_to(
+            &urls,
+            Filter::new()
+                .kind(crate::voice::SIGNAL)
+                .pubkey(keys.public_key())
+                .since(Timestamp::from(voice_since as u64))
+                .limit(0),
+            None,
+        )
+        .await
+        .ok();
     let inbox = EventBuilder::new(Kind::Custom(10050), "")
         .tags(
             urls.iter()
@@ -373,8 +386,24 @@ pub async fn start(app: Option<tauri::AppHandle>, s: Shared) -> Result<Value> {
             if state.social.generation.load(Ordering::SeqCst) != generation {
                 break;
             }
-            if let RelayPoolNotification::Event { event, .. } = n {
-                if event.kind == Kind::GiftWrap {
+            if let RelayPoolNotification::Event {
+                event, relay_url, ..
+            } = n
+            {
+                if event.kind == crate::voice::SIGNAL {
+                    let connected_since = incoming
+                        .relays()
+                        .await
+                        .get(&relay_url)
+                        .map(|relay| relay.stats().connected_at().as_secs() as i64)
+                        .unwrap_or(i64::MAX);
+                    let _ = crate::voice::receive(
+                        &state,
+                        handle.as_ref(),
+                        &event,
+                        voice_since.max(connected_since),
+                    );
+                } else if event.kind == Kind::GiftWrap {
                     let _result = receive(&state, &incoming, &event).await;
                     #[cfg(test)]
                     if let Err(e) = _result {
@@ -585,17 +614,14 @@ pub async fn receive(s: &AppState, client: &Client, event: &Event) -> Result<()>
             validate_public_profile(&body["profile"], gift.sender)?;
             crate::profile_sync::cache(s, &body["profile"], "accepted")?;
         }
-        "server_session" | "server_invite" => {
-            ensure!(
-                contact["state"] == "accepted",
-                "Only accepted friends may share servers"
-            );
-            crate::servers::sessions::receive(s, &sender, body)?;
-            if kind == "server_invite" {
-                let encrypted = secure::seal(s, &body.to_string())?;
-                s.db.lock().unwrap().execute("INSERT OR IGNORE INTO messages(id,peer,direction,kind,body,state,created) VALUES(?,?,'in',?,?,'delivered',?)",params![id,sender,kind,encrypted,created])?;
-                queue(s, &sender, "ack", json!({"id":id}), true).await?;
-            }
+        "server_session" => return Ok(()),
+        "server_invite" => {
+            ensure!(contact["state"] == "accepted", "Unknown invitation sender");
+            let encrypted = secure::seal(s, &body.to_string())?;
+            s.db.lock().unwrap().execute(
+                "INSERT OR IGNORE INTO messages(id,peer,direction,kind,body,state,created) VALUES(?,?,'in',?,?,'delivered',?)",
+                params![id,sender,kind,encrypted,created],
+            )?;
         }
         "profile_update" => {
             ensure!(

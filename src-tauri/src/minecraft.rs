@@ -442,7 +442,6 @@ pub async fn launch(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<V
     let id = text(v, "id")?;
     let p = db::item(s, id)?;
     validate_profile(&p)?;
-    crate::servers::client_memory(s, p["memory"].as_u64().unwrap_or(2048))?;
     let root = profile_root(s, &p)?;
     let installed: Value = serde_json::from_slice(
         &tokio::fs::read(root.join("installed.json"))
@@ -458,15 +457,7 @@ pub async fn launch(app: &tauri::AppHandle, s: &AppState, v: &Value) -> Result<V
     } else {
         offline_session(text(&p, "offlineName")?)
     };
-    let mut command = launch_command(&p, &root, &installed, &session)?;
-    if let Some(address) = v["join"].as_str() {
-        ensure!(
-            p["version"] == crate::servers::VERSION,
-            "Server Quick Play requires a supported profile"
-        );
-        crate::servers::sessions::address(address)?;
-        command.arg("--quickPlayMultiplayer").arg(address);
-    }
+    let command = launch_command(&p, &root, &installed, &session)?;
     let secret = session["accessToken"].as_str().unwrap_or("").to_owned();
     spawn(app, s, &p, command, secret).await
 }

@@ -34,7 +34,11 @@ async fn relay(State(s): State<Fixture>, ws: WebSocketUpgrade) -> impl IntoRespo
     ws.on_upgrade(move |socket| session(socket, s))
 }
 fn matches(event: &Value, filter: &Value) -> bool {
-    filter["kinds"]
+    filter["since"].as_i64().is_none_or(|since| {
+        event["created_at"]
+            .as_i64()
+            .is_some_and(|created| created >= since)
+    }) && filter["kinds"]
         .as_array()
         .is_none_or(|a| a.contains(&event["kind"]))
         && filter["#p"].as_array().is_none_or(|a| {
@@ -48,7 +52,7 @@ async fn session(socket: WebSocket, s: Fixture) {
     let mut notices = s.broadcast.subscribe();
     let mut subscriptions: HashMap<String, Value> = HashMap::new();
     loop {
-        tokio::select! {frame=rx.next()=>{let text=match frame { Some(Ok(Message::Text(text)))=>text,Some(Ok(Message::Ping(data)))=>{let _=tx.send(Message::Pong(data)).await;continue},Some(Ok(Message::Pong(_)))=>continue,_=>break};let Ok(v)=serde_json::from_str::<Value>(&text)else{continue};match v[0].as_str(){Some("EVENT")=>{let Ok(e)=serde_json::from_value::<Event>(v[1].clone())else{continue};let ok=e.verify().is_ok();if ok{s.events.lock().unwrap().push(v[1].clone());let _=s.broadcast.send(v[1].clone());}let _=tx.send(Message::Text(json!(["OK",v[1]["id"],ok,""]).to_string().into())).await;},Some("REQ")=>{let id=v[1].as_str().unwrap_or("").to_owned();let filter=v[2].clone();let events=s.events.lock().unwrap().clone();for e in events{if matches(&e,&filter){let _=tx.send(Message::Text(json!(["EVENT",id,e]).to_string().into())).await;}}let _=tx.send(Message::Text(json!(["EOSE",id]).to_string().into())).await;subscriptions.insert(id,filter);},Some("CLOSE")=>{if let Some(id)=v[1].as_str(){subscriptions.remove(id);}},_=>{}}},event=notices.recv()=>{let Ok(e)=event else{break};for(id,filter)in &subscriptions{if matches(&e,filter){let _=tx.send(Message::Text(json!(["EVENT",id,e]).to_string().into())).await;}}}}
+        tokio::select! {frame=rx.next()=>{let text=match frame { Some(Ok(Message::Text(text)))=>text,Some(Ok(Message::Ping(data)))=>{let _=tx.send(Message::Pong(data)).await;continue},Some(Ok(Message::Pong(_)))=>continue,_=>break};let Ok(v)=serde_json::from_str::<Value>(&text)else{continue};match v[0].as_str(){Some("EVENT")=>{let Ok(e)=serde_json::from_value::<Event>(v[1].clone())else{continue};let ok=e.verify().is_ok();if ok{if !e.kind.is_ephemeral() {s.events.lock().unwrap().push(v[1].clone());}let _=s.broadcast.send(v[1].clone());}let _=tx.send(Message::Text(json!(["OK",v[1]["id"],ok,""]).to_string().into())).await;},Some("REQ")=>{let id=v[1].as_str().unwrap_or("").to_owned();let filter=v[2].clone();let events=s.events.lock().unwrap().clone();for e in events{if filter["limit"] != 0 && matches(&e,&filter){let _=tx.send(Message::Text(json!(["EVENT",id,e]).to_string().into())).await;}}let _=tx.send(Message::Text(json!(["EOSE",id]).to_string().into())).await;subscriptions.insert(id,filter);},Some("CLOSE")=>{if let Some(id)=v[1].as_str(){subscriptions.remove(id);}},_=>{}}},event=notices.recv()=>{let Ok(e)=event else{break};for(id,filter)in &subscriptions{if matches(&e,filter){let _=tx.send(Message::Text(json!(["EVENT",id,e]).to_string().into())).await;}}}}
     }
 }
 async fn preflight() -> StatusCode {
@@ -196,7 +200,7 @@ pub(crate) fn state(root: PathBuf) -> Result<Shared> {
         auth_lock: tokio::sync::Mutex::new(()),
         social: social::Runtime::default(),
         transfers: media::Transfers::new(),
-        servers: crate::servers::Runtime::default(),
+        voice: crate::voice::Runtime::default(),
     });
     identity::init(&s)?;
     Ok(s)
@@ -586,5 +590,65 @@ async fn two_clients_friendship_offline_delivery_media_and_recovery() -> Result<
     }
     server.abort();
     eprintln!("Real two-client NIP-17/Blossom check passed with {size} plaintext bytes, range resume, friendship, acknowledgments, blocking and encrypted restore");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "Loopback services and isolated profiles for exercising the packaged WebView2 app"]
+async fn voice_desktop_fixture() -> Result<()> {
+    let root = PathBuf::from(std::env::var("ORBIT_VOICE_FIXTURE")?);
+    anyhow::ensure!(
+        root.is_absolute() && !root.exists(),
+        "Use a fresh absolute directory"
+    );
+    let (relay, storage, _server, _) = fixture(&root).await?;
+    let a = state(root.join("alice"))?;
+    let b = state(root.join("bob"))?;
+    for (s, name) in [(&a, "Voice Alice"), (&b, "Voice Bob")] {
+        identity::save(s, &json!({"name":name}))?;
+        identity::save_config(
+            s,
+            &json!({"mode":"custom","enabled":true,"relays":[relay],"mediaServer":storage,"mediaConsent":true}),
+        )?;
+    }
+    let aid = identity::keys(&a)?.public_key().to_hex();
+    let bid = identity::keys(&b)?.public_key().to_hex();
+    identity::put_contact(
+        &a,
+        &json!({"id":bid,"name":"Voice Bob","relays":[relay]}),
+        "accepted",
+    )?;
+    identity::put_contact(
+        &b,
+        &json!({"id":aid,"name":"Voice Alice","relays":[relay]}),
+        "accepted",
+    )?;
+    let card = secure::seal(
+        &a,
+        &json!({"name":"Legacy test world","version":"1.21.1","loader":"vanilla"}).to_string(),
+    )?;
+    a.db.lock().unwrap().execute(
+        "INSERT INTO messages(id,peer,direction,kind,body,state,created) VALUES(?,?,'in','server_invite',?,'delivered',?)",
+        rusqlite::params![uuid::Uuid::new_v4().to_string(),bid,card,db::now()],
+    )?;
+    let world = a.root.join("minecraft/servers/legacy-fixture");
+    std::fs::create_dir_all(world.join("backups"))?;
+    std::fs::write(world.join("level.dat"), b"legacy world fixture")?;
+    std::fs::write(world.join("backups/backup.zip"), b"legacy backup fixture")?;
+    std::fs::write(
+        root.join("ready.json"),
+        json!({"alice":aid,"bob":bid}).to_string(),
+    )?;
+    for _ in 0..1200 {
+        if root.join("stop").exists() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
+    for s in [&a, &b] {
+        for key in ["nostr-key", "data-key"] {
+            secure::remove(s, key)?;
+        }
+    }
     Ok(())
 }

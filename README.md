@@ -6,13 +6,13 @@ A lightweight, local-first Windows launcher built with **Rust, Tauri 2, React/Ty
 
 ## Download
 
-Windows x64 downloads are published under [GitHub Releases](https://github.com/spokobot737-lab/orbit-launcher/releases). Use the `Orbit_0.4.1_x64-setup.exe` installer. A standalone `orbit-launcher.exe` is also provided; it needs Microsoft Edge WebView2 Runtime installed.
+Windows x64 downloads are published under [GitHub Releases](https://github.com/spokobot737-lab/orbit-launcher/releases). Use the `Orbit_0.5.0_x64-setup.exe` installer. A standalone `orbit-launcher.exe` is also provided; it needs Microsoft Edge WebView2 Runtime installed.
 
 The build is unsigned. A production release should be code-signed. Roblox must already be installed and signed in through its official application.
 
 ## Features
 
-- Minecraft → Servers: dedicated local Java hosting, separate client/server processes, premium/nonpremium modes, visible local/public addresses, nickname/account allowlist, world-copy import, stopped-world backups/restore, bounded logs and lifecycle controls. Online access uses the official embedded playit core and one-time browser authorization and automatic free Minecraft Java tunnel allocation; friends need no agent. Initial scope: 1.21.1 Vanilla and bare Fabric 0.16.14. See [hosting setup and boundaries](docs/HOSTING.md) and [verification](docs/HOSTING_VERIFICATION.md). Real authenticated multiplayer still requires publisher Microsoft/Minecraft access; loopback or host-side tunnel checks do not prove a second-network player joined.
+- Conversations supports recorded voice messages through encrypted Blossom attachments and direct one-to-one WebRTC calls. Minecraft dedicated hosting has been retired. Existing worlds and backups remain in the Orbit data directory. See [voice setup and verification](docs/VOICE.md).
 
 - Home with local recent launches and pinned favorites; custom collections and unified library search.
 - Live public Roblox Explore sections, search, experience details, creator/player/visit metadata, locally cached icons, and place-specific runtime dispatch. The app requests Home and explains access restrictions; Public Explore is automatically loaded and explicitly labeled separately from personalized Home.
@@ -64,7 +64,7 @@ Build outputs:
 
 ```text
 src-tauri/target/release/orbit-launcher.exe
-src-tauri/target/release/bundle/nsis/Orbit_0.4.1_x64-setup.exe
+src-tauri/target/release/bundle/nsis/Orbit_0.5.0_x64-setup.exe
 ```
 
 ## Minecraft setup

@@ -1,6 +1,6 @@
 [package]
 name = "orbit-launcher"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2021"
 
 [build-dependencies]
@@ -29,7 +29,7 @@ dunce = "1"
 httpdate = "1"
 md5 = "0.8"
 regex = "1"
-windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_System_SystemInformation"] }
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Threading"] }
 nostr-sdk = { version = "0.44", features = ["nip59"] }
 siwe = "0.6"
 k256 = { version = "0.13", features = ["ecdsa"] }
@@ -47,12 +47,6 @@ atrium-identity = { version = "0.2", features = ["doh-handle-resolver"] }
 atrium-common = "0.1"
 async-trait = "0.1"
 serde_html_form = "0.2"
-flate2 = "1"
-fs2 = "0.4"
-hickory-resolver = { version = "0.24", features = ["system-config", "tokio-runtime"] }
-fastnbt = "2"
-playit-agent-core = { git = "https://github.com/playit-cloud/playit-agent", rev = "7acf13568a99707dda73028234fdb376e45b15da", package = "playit-agent-core" }
-playit-api-client = { git = "https://github.com/playit-cloud/playit-agent", rev = "7acf13568a99707dda73028234fdb376e45b15da", package = "playit-api-client" }
 windows = { version = "0.62", features = ["Media_Control", "Foundation", "Storage_Streams"] }
 
 [profile.release]

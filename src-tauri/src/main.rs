@@ -21,7 +21,6 @@ mod programs;
 mod publisher;
 mod roblox;
 mod secure;
-mod servers;
 mod social;
 mod social_commands;
 mod social_network;
@@ -31,6 +30,7 @@ mod social_peer_tests;
 mod social_tests;
 #[cfg(test)]
 mod social_upgrade_tests;
+mod voice;
 mod wallet;
 use serde_json::{json, Value};
 use std::{
@@ -47,7 +47,7 @@ pub struct AppState {
     pub auth_lock: tokio::sync::Mutex<()>,
     pub social: social::Runtime,
     pub transfers: media::Transfers,
-    pub servers: servers::Runtime,
+    pub voice: voice::Runtime,
 }
 pub type Shared = Arc<AppState>;
 pub fn progress(app: &tauri::AppHandle, stage: &str, done: usize, total: usize) {
@@ -60,7 +60,7 @@ pub fn post_launch(app: &tauri::AppHandle, s: &AppState) {
             let _ = w.minimize();
         }
     } else if setting == "exit" {
-        if servers::active(s) {
+        if voice::active(s) {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.minimize();
             }
@@ -125,7 +125,7 @@ async fn api(
             "mc_account" => auth::account(&s),
             "mc_signout" => auth::signout(&s),
             "logs" => minecraft::logs(&s, &args),
-            _ if op.starts_with("server_") => servers::dispatch(Some(app.clone()), s.clone(), &op, args.clone()).await,
+            _ if op.starts_with("orbit_voice_") => voice::dispatch(&app, s.clone(), &op, &args).await,
             _ if op.starts_with("orbit_") => {
                 social_commands::dispatch(&app, s.clone(), &op, args.clone()).await
             }
@@ -165,7 +165,7 @@ fn main() {
                 auth_lock: tokio::sync::Mutex::new(()),
                 social: social::Runtime::default(),
                 transfers: media::Transfers::new(),
-                servers: crate::servers::Runtime::default(),
+                voice: voice::Runtime::default(),
             });
             identity::init(&state)?;
             app.manage(state.clone());
@@ -182,9 +182,9 @@ fn main() {
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 let state = window.state::<Shared>();
-                if servers::active(&state) {
+                if voice::active(&state) {
                     api.prevent_close();
-                    let _ = window.emit("hosting-close", json!({}));
+                    let _ = window.emit("voice-close", json!({}));
                     let _ = window.show();
                     let _ = window.set_focus();
                 }

@@ -38,9 +38,7 @@ import {
 } from "lucide-react";
 import { api, native, Item, Collection, errorText, imageUrl } from "./api";
 import "./style.css";
-import "./servers.css";
-import HostingClose from "./HostingClose";
-const MinecraftServers = lazy(() => import("./Servers"));
+import { VoiceProvider } from "./Voice";
 import { Cover, Empty, Heading } from "./components";
 const SocialView = lazy(() => import("./Social"));
 const RobloxView = lazy(() => import("./Roblox"));
@@ -78,6 +76,11 @@ const nav = [
   { name: "Settings", icon: Settings },
 ] as const;
 function App() {
+  useEffect(() => {
+    const handler = () => setPage("Conversations");
+    window.addEventListener("orbit-voice-message", handler);
+    return () => window.removeEventListener("orbit-voice-message", handler);
+  }, []);
   const [page, setPage] = useState<Page>("Home"),
     [items, setItems] = useState<Item[]>([]),
     [collections, setCollections] = useState<Collection[]>([]),
@@ -101,7 +104,6 @@ function App() {
     } | null>(null),
     [running, setRunning] = useState<Record<string, boolean>>({}),
     [selectedCollection, setSelectedCollection] = useState("");
-  const [minecraftTab, setMinecraftTab] = useState("profiles");
   const searchRef = useRef<HTMLInputElement>(null);
   const pageRef = useRef<Page>(page);
   useEffect(() => {
@@ -435,11 +437,10 @@ function App() {
             </span>
           </button>
           <div className="version">
-            ORBIT LAUNCHER <span>v0.4.1</span>
+            ORBIT LAUNCHER <span>v0.5.0</span>
           </div>
         </div>
       </aside>
-      <HostingClose />
       <div className="main-shell">
         <header>
           <div className="breadcrumb">
@@ -594,94 +595,74 @@ function App() {
           )}
           {page === "Minecraft" && (
             <>
-              <div className="minecraft-tabs">
+              <Heading
+                eyebrow="JAVA EDITION"
+                title="A world of possibilities."
+                subtitle="Install, customize, and launch. Every profile is its own world."
+                action={
+                  <button className="primary" onClick={newProfile}>
+                    <Plus size={16} /> New profile
+                  </button>
+                }
+              />
+              <div className="info-strip">
+                <Boxes size={23} />
+                <div>
+                  <strong>Built for your way to play</strong>
+                  <p>
+                    Direct installation · Managed Java · Isolated game folders ·
+                    Verified downloads
+                  </p>
+                </div>
+              </div>
+              <div className="account-strip">
+                <span className="avatar">
+                  <Gamepad2 size={19} />
+                </span>
+                <div>
+                  <strong>
+                    {account ? account.name : "Choose how you play"}
+                  </strong>
+                  <p>
+                    {account
+                      ? "Microsoft account connected · Entitlement checked again at launch"
+                      : "Connect Microsoft from your Profile. Availability depends on this Orbit release."}
+                  </p>
+                </div>
                 <button
-                  className={minecraftTab === "profiles" ? "active" : ""}
-                  onClick={() => setMinecraftTab("profiles")}
+                  className="secondary"
+                  disabled={!!busy}
+                  onClick={() =>
+                    publisher.microsoft
+                      ? perform(
+                          "signin",
+                          () => api("mc_signin"),
+                          "Microsoft account connected",
+                        )
+                      : setPage("Connections")
+                  }
                 >
-                  Installation profiles
-                </button>
-                <button
-                  className={minecraftTab === "servers" ? "active" : ""}
-                  onClick={() => setMinecraftTab("servers")}
-                >
-                  Servers
+                  {busy === "signin"
+                    ? "Waiting for browser…"
+                    : account
+                      ? "Switch account"
+                      : "Connect Microsoft"}
+                  <ArrowUpRight size={14} />
                 </button>
               </div>
-              {minecraftTab === "servers" ? (
-                <MinecraftServers onLibraryChanged={load} />
-              ) : (
-                <>
-                  <Heading
-                    eyebrow="JAVA EDITION"
-                    title="A world of possibilities."
-                    subtitle="Install, customize, and launch. Every profile is its own world."
-                    action={
-                      <button className="primary" onClick={newProfile}>
-                        <Plus size={16} /> New profile
-                      </button>
-                    }
-                  />
-                  <div className="info-strip">
-                    <Boxes size={23} />
-                    <div>
-                      <strong>Built for your way to play</strong>
-                      <p>
-                        Direct installation · Managed Java · Isolated game
-                        folders · Verified downloads
-                      </p>
-                    </div>
-                  </div>
-                  <div className="account-strip">
-                    <span className="avatar">
-                      <Gamepad2 size={19} />
-                    </span>
-                    <div>
-                      <strong>
-                        {account ? account.name : "Choose how you play"}
-                      </strong>
-                      <p>
-                        {account
-                          ? "Microsoft account connected · Entitlement checked again at launch"
-                          : "Connect Microsoft from your Profile. Availability depends on this Orbit release."}
-                      </p>
-                    </div>
-                    <button
-                      className="secondary"
-                      disabled={!!busy}
-                      onClick={() =>
-                        publisher.microsoft
-                          ? perform(
-                              "signin",
-                              () => api("mc_signin"),
-                              "Microsoft account connected",
-                            )
-                          : setPage("Connections")
-                      }
-                    >
-                      {busy === "signin"
-                        ? "Waiting for browser…"
-                        : account
-                          ? "Switch account"
-                          : "Connect Microsoft"}
-                      <ArrowUpRight size={14} />
-                    </button>
-                  </div>
-                  {section(
-                    "Installation profiles",
-                    visible.filter((i) => i.kind === "minecraft"),
-                    "Start with a new profile",
-                    "Choose your Minecraft version, memory, and account. Orbit downloads the files and Java you need.",
-                  )}
-                  <div className="note">
-                    <AlertCircle size={16} />
-                    Offline profiles are local identities. They do not grant
-                    ownership or access to authenticated multiplayer. The Fabric
-                    performance preset targets 1.21.1 and installs Sodium,
-                    Lithium, and FerriteCore directly from Modrinth.
-                  </div>
-                </>
+              {section(
+                "Installation profiles",
+                visible.filter((i) => i.kind === "minecraft"),
+                "Start with a new profile",
+                "Choose your Minecraft version, memory, and account. Orbit downloads the files and Java you need.",
               )}
+              <div className="note">
+                <AlertCircle size={16} />
+                Offline profiles are local identities. They do not grant
+                ownership or access to authenticated multiplayer. The Fabric
+                performance preset targets 1.21.1 and installs Sodium, Lithium,
+                and FerriteCore directly from Modrinth.
+              </div>
             </>
           )}
           {page === "Roblox" && (
@@ -872,7 +853,7 @@ function App() {
               <div className="settings-panel about">
                 <span className="brand-symbol">◒</span>
                 <div>
-                  <h2>Orbit 0.4.1 · Social prototype</h2>
+                  <h2>Orbit 0.5.0 · Social prototype</h2>
                   <p>
                     Rust + Tauri + TypeScript + SQLite. No Orbit account. No
                     hosted backend.
@@ -880,18 +861,6 @@ function App() {
                     An independent launcher, unaffiliated with Mojang,
                     Microsoft, or Roblox.
                   </p>
-                  <button
-                    className="text-button"
-                    onClick={() =>
-                      api<string>("server_license")
-                        .then((text) =>
-                          setLogs({ name: "playit component license", text }),
-                        )
-                        .catch((e) => setError(errorText(e)))
-                    }
-                  >
-                    playit component license
-                  </button>
                 </div>
               </div>
             </>
@@ -903,7 +872,7 @@ function App() {
           </span>
           <span>
             {items.length} {items.length === 1 ? "item" : "items"} in your space{" "}
-            <Minus size={12} /> Orbit 0.4.1
+            <Minus size={12} /> Orbit 0.5.0
           </span>
         </footer>
       </div>
@@ -1421,7 +1390,9 @@ function Editor({
   );
 }
 createRoot(document.getElementById("root")!).render(
-  <Suspense fallback={<div className="loading">Loading Orbit…</div>}>
-    <App />
-  </Suspense>,
+  <VoiceProvider>
+    <Suspense fallback={<div className="loading">Loading Orbit…</div>}>
+      <App />
+    </Suspense>
+  </VoiceProvider>,
 );

@@ -204,7 +204,17 @@ pub async fn prepare(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value)
         .context("Filename missing")?
         .to_string_lossy()
         .into_owned();
-    let mime = content_type(&path);
+    let voice = v["voice"] == true && path.starts_with(s.root.join("voice-tmp"));
+    let mime = if voice {
+        match path.extension().and_then(|ext| ext.to_str()) {
+            Some("webm") => "audio/webm".to_owned(),
+            Some("ogg") => "audio/ogg".to_owned(),
+            Some("m4a") => "audio/mp4".to_owned(),
+            _ => anyhow::bail!("Unsupported voice format"),
+        }
+    } else {
+        content_type(&path)
+    };
     let compressed = v["compress"] == true && mime.starts_with("image/") && mime != "image/gif";
     let result = tokio::task::spawn_blocking(move || -> Result<Value> {
         // Remove derived plaintext even when encoding/encryption is canceled or fails.
@@ -277,7 +287,7 @@ pub async fn prepare(app: Option<tauri::AppHandle>, s: crate::Shared, v: &Value)
         let value = json!({"id":id,"name":actual_name,"type":actual_type,"size":total,
             "sha256":format!("{:x}",hash.finalize()),"encryptedSha256":encrypted_hash,
             "encryptedSize":encrypted_size,"key":secret,"source":path,"encryptedPath":dest,
-            "state":"staged","compressed":compressed});
+            "state":"staged","compressed":compressed,"voice":voice});
         store(&state, &value)?;
         report(&state, app.as_ref(), &id, "staged", total, total, None);
         Ok(value)
@@ -738,7 +748,9 @@ pub async fn retrieve_reference(
         "image/gif" => "gif",
         "image/webp" => "webp",
         "video/mp4" => "mp4",
-        "video/webm" => "webm",
+        "video/webm" | "audio/webm" => "webm",
+        "audio/ogg" => "ogg",
+        "audio/mp4" => "m4a",
         _ => "bin",
     };
     let plain = s
@@ -823,5 +835,30 @@ pub async fn save_original(s: &AppState, v: &Value) -> Result<Value> {
         "Choose a new filename; existing files are preserved"
     );
     tokio::fs::copy(path, destination).await?;
+    Ok(json!(true))
+}
+
+pub fn discard_voice(s: &AppState, v: &Value) -> Result<Value> {
+    let id = v["id"].as_str().context("Missing recording")?;
+    uuid::Uuid::parse_str(id)?;
+    let tokens = s.transfers.tokens.lock().unwrap();
+    ensure!(
+        !tokens.contains_key(id),
+        "Wait for the voice upload to finish"
+    );
+    let media = load(s, id)?;
+    ensure!(media["voice"] == true, "Not a voice draft");
+    let file = s
+        .root
+        .join("cache/media/encrypted")
+        .join(format!("{id}.age"));
+    match std::fs::remove_file(file) {
+        Ok(()) => (),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+        Err(e) => return Err(e.into()),
+    }
+    s.db.lock()
+        .unwrap()
+        .execute("DELETE FROM media WHERE id=?", [id])?;
     Ok(json!(true))
 }

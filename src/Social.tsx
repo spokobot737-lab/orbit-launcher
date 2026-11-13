@@ -1,4 +1,5 @@
-import { ServerInvitationCard } from "./Servers";
+import { useVoice } from "./Voice";
+import VoiceRecorder from "./VoiceRecorder";
 import ProfileCard from "./ProfileCard";
 import NetworkSettings from "./NetworkSettings";
 import ProfileActivity, { SharedActivity } from "./ProfileActivity";
@@ -84,7 +85,14 @@ type Message = {
   created: number;
   state: string;
   error?: string;
-  body: { text?: string; attachments?: Attachment[]; message?: string };
+  body: {
+    text?: string;
+    attachments?: Attachment[];
+    message?: string;
+    name?: string;
+    version?: string;
+    loader?: string;
+  };
 };
 const short = (s: string) => (s ? `${s.slice(0, 12)}…${s.slice(-7)}` : "");
 function ProviderImage({ url, alt }: { url: string; alt: string }) {
@@ -263,6 +271,10 @@ export default function SocialView({
       return () => clearTimeout(t);
     }
   }, [notice]);
+  const { messagePeer } = useVoice();
+  useEffect(() => {
+    if (page === "Conversations" && messagePeer) setPeer(messagePeer);
+  }, [page, messagePeer]);
   const accepted = contacts.filter((c) => c.state === "accepted"),
     incoming = contacts.filter((c) => c.state === "incoming");
   const disconnect = (provider: string) =>
@@ -1323,10 +1335,12 @@ function Conversations({
     [gallery, setGallery] = useState<{ url: string; name: string } | null>(
       null,
     );
+  const voice = useVoice();
   const selected = contacts.find((c) => c.id === peer);
   const filtered = messages.filter(
     (m) =>
       m.kind === "message" ||
+      m.kind === "server_invite" ||
       m.kind === "wallet_challenge" ||
       m.kind === "wallet_proof",
   );
@@ -1462,6 +1476,13 @@ function Conversations({
                   {short(selected.id)}
                 </p>
               </div>
+              <button
+                className="secondary"
+                disabled={voice.active || config.enabled !== true}
+                onClick={() => voice.start(selected)}
+              >
+                Call
+              </button>
               <button
                 className="text-button"
                 onClick={() => setProofOpen(!proofOpen)}
@@ -1612,11 +1633,15 @@ function Conversations({
                     >
                       <div className="message-bubble">
                         {m.kind === "server_invite" ? (
-                          <ServerInvitationCard
-                            body={m.body}
-                            peer={peer}
-                            outgoing={m.direction === "out"}
-                          />
+                          <div>
+                            <strong>{m.body.name || "Minecraft server"}</strong>
+                            {m.body.version && (
+                              <p>
+                                Minecraft {m.body.version} {m.body.loader}
+                              </p>
+                            )}
+                            <p>Server hosting is unavailable</p>
+                          </div>
                         ) : m.kind === "wallet_challenge" ? (
                           <>
                             <strong>
@@ -1779,6 +1804,12 @@ function Conversations({
                   rows={2}
                 />
                 <div className="composer-tools">
+                  <VoiceRecorder
+                    key={peer}
+                    peer={peer}
+                    onSent={load}
+                    onError={onError}
+                  />
                   <button
                     className="icon-btn"
                     title="Attach files"
@@ -1856,7 +1887,8 @@ function AttachmentCard({
   const [path, setPath] = useState(""),
     [busy, setBusy] = useState(false);
   const image = file.type.startsWith("image/"),
-    video = ["video/mp4", "video/webm"].includes(file.type);
+    video = ["video/mp4", "video/webm"].includes(file.type),
+    audio = ["audio/webm", "audio/ogg", "audio/mp4"].includes(file.type);
   const fetch = async () => {
     setBusy(true);
     try {
@@ -1873,7 +1905,7 @@ function AttachmentCard({
   };
   return (
     <div
-      className={`attachment-card ${path && (image || video) ? "preview" : ""}`}
+      className={`attachment-card ${path && (image || video || audio) ? "preview" : ""}`}
     >
       {path && image ? (
         <button
@@ -1882,6 +1914,18 @@ function AttachmentCard({
         >
           <img src={path} alt={file.name} loading="lazy" />
         </button>
+      ) : path && audio ? (
+        <audio
+          src={path}
+          controls
+          preload="metadata"
+          aria-label="Voice message"
+          onError={() =>
+            onError(
+              "WebView2 could not play this audio. Download the original to open it in another player.",
+            )
+          }
+        />
       ) : path && video ? (
         <video
           src={path}
@@ -1906,7 +1950,7 @@ function AttachmentCard({
             <Download size={13} />
             {busy
               ? "Downloading…"
-              : image || video
+              : image || video || audio
                 ? "Download & preview"
                 : "Download encrypted file"}
           </button>
